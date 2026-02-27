@@ -1,0 +1,24 @@
+============================================================
+RELATÓRIO DE DESEMPENHO - APLICATIVO DE QUESTÕES
+============================================================
+
+DADOS DO ESTUDANTE:
+------------------------------------------------------------
+Nome: Pedro CArlos
+Registro Acadêmico: 2025
+Turma: ds2p48
+Data: 27/02/2026 08:34:58
+
+ESTATÍSTICAS:
+------------------------------------------------------------
+Total de Questões: 6
+Questões Respondidas: 2
+Acertos: 2
+Erros: 0
+Aproveitamento: 100.0%
+Tempo utilizado: 01:17
+
+DETALHES DAS QUESTÕES:
+------------------------------------------------------------
+TOMO 1.0 - Questão 2 | Marcada: B | Correta: B
+TOMO 1.0 - Questão 9 | Marcada: C | Correta: C

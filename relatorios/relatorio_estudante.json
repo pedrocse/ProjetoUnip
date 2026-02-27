@@ -1,0 +1,24 @@
+{
+    "dados_usuario": {
+        "nome": "Pedro Carlos da Silva",
+        "registro_academico": "732122",
+        "turma": "DS2Q",
+        "data_cadastro": "2026-02-27 12:33:22"
+    },
+    "estatisticas": {
+        "total_questoes": 6,
+        "questoes_respondidas": 1,
+        "acertos": 1,
+        "erros": 0,
+        "aproveitamento": "100.0%",
+        "data_geracao": "2026-02-27 12:33:22"
+    },
+    "detalhes_questoes": [
+        {
+            "tomo": 1.0,
+            "numero": 2,
+            "alternativa_correta": "B",
+            "alternativa_marcada": "B"
+        }
+    ]
+}
