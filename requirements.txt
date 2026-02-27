@@ -1,0 +1,7 @@
+streamlit
+streamlit-autorefresh
+pandas
+openpyxl
+python-docx
+Pillow
+xlrd
