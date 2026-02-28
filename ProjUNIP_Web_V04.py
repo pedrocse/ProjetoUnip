@@ -1,1978 +1,1251 @@
-import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, simpledialog
+# -*- coding: utf-8 -*-
 import os
 import re
+import io
 import json
 import time
-from datetime import datetime, timedelta
+import zipfile
+from io import BytesIO
+from datetime import datetime
 
-# Tentar importar python-docx para ler arquivos .docx
+import pandas as pd
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+import smtplib
+from email.message import EmailMessage
+
+st.set_page_config(page_title="Aplicativo de Questões - TOMOs", layout="wide")
+
+# Dependências opcionais
 try:
     from docx import Document
-
     DOCX_DISPONIVEL = True
-except ImportError:
+    DOCX_IMPORT_ERROR = None
+except Exception as e:
     DOCX_DISPONIVEL = False
-    print("Biblioteca python-docx não encontrada. Instale com: pip install python-docx")
-
-
-class QuestoesApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Aplicativo de Questões")
-        self.root.geometry("1200x750")
-        #self.root.state('zoomed')
-        #self.root.resizable(True, True)  # Permite redimensionar largura e altura
-        self.root.configure(bg='#2c3e50')
-
-        # Variáveis
-        self.df = None
-        self.questao_atual = 0
-        self.questoes_agrupadas = []
-        self.alternativa_selecionada = None
-        self.resposta_verificada = False
-
-        # Estatísticas
-        self.total_acertos = 0
-        self.total_erros = 0
-        self.questoes_respondidas = set()
-
-        # Temporizador
-        self.timer_ativo = False
-        self.tempo_inicial = None
-        self.tempo_restante = None
-        self.timer_id = None
-        self.tempo_prova = 60 * 60  # 60 minutos em segundos (padrão)
-
-        # Arquivo de progresso
-        self.arquivo_progresso = "progresso_questoes.json"
-
-        # Diretório de teorias
-        self.diretorio_teorias = "teorias"
-
-        # Diretório de imagens das questões
-        self.diretorio_imagens = "imagens"
-
-        # Criar widgets
-        self.criar_widgets()
-
-        # Carregar progresso anterior
-        self.carregar_progresso()
-
-    def criar_widgets(self):
-        """Cria todos os widgets da interface"""
-
-        # Limpar tudo primeiro
-        for widget in self.root.winfo_children():
-            widget.destroy()
-
-        # Frame superior - título
-        frame_topo = tk.Frame(self.root, bg='#34495e', height=80)
-        frame_topo.pack(fill='x')
-
-        titulo = tk.Label(
-            frame_topo,
-            text="📚 Aplicativo de Questões - TOMOs",
-            font=("Arial", 24, "bold"),
-            bg='#34495e',
-            fg='white'
-        )
-        titulo.pack(pady=10)
-
-        # Frame de estatísticas e temporizador
-        frame_stats = tk.Frame(frame_topo, bg='#34495e')
-        frame_stats.pack(fill='x', padx=20, pady=5)
-
-        # Estatísticas
-        self.lbl_estatisticas = tk.Label(
-            frame_stats,
-            text="📊 Acertos: 0 | Erros: 0 | Total: 0",
-            font=("Arial", 11, "bold"),
-            bg='#34495e',
-            fg='#f39c12'
-        )
-        self.lbl_estatisticas.pack(side='left', padx=10)
-
-        # Temporizador
-        self.lbl_temporizador = tk.Label(
-            frame_stats,
-            text="⏱️ Tempo: 00:00",
-            font=("Arial", 11, "bold"),
-            bg='#34495e',
-            fg='#f39c12'
-        )
-        self.lbl_temporizador.pack(side='right', padx=10)
-
-        # Frame principal
-        self.frame_principal = tk.Frame(self.root, bg='#2c3e50')
-        self.frame_principal.pack(fill='both', expand=True, padx=20, pady=20)
-
-        # Frame para carregar arquivo
-        self.frame_carregar = tk.Frame(self.frame_principal, bg='#2c3e50')
-        self.frame_carregar.pack(fill='both', expand=True)
-
-        lbl_instrucao = tk.Label(
-            self.frame_carregar,
-            text="📁 Selecione o arquivo Excel com as questões:",
-            font=("Arial", 12),
-            bg='#2c3e50',
-            fg='white'
-        )
-        lbl_instrucao.pack(pady=20)
-
-        # Entrada para nome do arquivo
-        frame_arquivo = tk.Frame(self.frame_carregar, bg='#2c3e50')
-        frame_arquivo.pack(pady=10)
-
-        self.entry_arquivo = tk.Entry(frame_arquivo, width=50, font=("Arial", 11))
-        self.entry_arquivo.insert(0, "TOMOs com questões.xlsx")
-        self.entry_arquivo.pack(side='left', padx=5)
-
-        btn_procurar = tk.Button(
-            frame_arquivo,
-            text="📂 Procurar",
-            command=self.procurar_arquivo,
-            bg='#3498db',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            cursor='hand2'
-        )
-        btn_procurar.pack(side='left', padx=5)
-
-        # Botão carregar
-        btn_carregar = tk.Button(
-            self.frame_carregar,
-            text="🚀 Carregar Planilha",
-            command=self.carregar_planilha,
-            bg='#27ae60',
-            fg='white',
-            font=("Arial", 12, "bold"),
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_carregar.pack(pady=30)
-
-        # Botões de modo de estudo/prova
-        frame_modos = tk.Frame(self.frame_carregar, bg='#2c3e50')
-        frame_modos.pack(pady=10)
-
-        btn_modo_estudo = tk.Button(
-            frame_modos,
-            text="📖 Modo Estudo",
-            command=lambda: self.definir_modo('estudo'),
-            bg='#3498db',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_modo_estudo.pack(side='left', padx=5)
-
-        btn_modo_prova = tk.Button(
-            frame_modos,
-            text="📝 Modo Prova",
-            command=lambda: self.definir_modo('prova'),
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_modo_prova.pack(side='left', padx=5)
-
-        # Botão teorias
-        btn_teorias = tk.Button(
-            frame_modos,
-            text="📚 Diretório de Teorias",
-            command=self.definir_diretorio_teorias,
-            bg='#9b59b6',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_teorias.pack(side='left', padx=5)
-
-        # Botão imagens
-        btn_imagens = tk.Button(
-            frame_modos,
-            text="🖼️ Diretório de Imagens",
-            command=self.definir_diretorio_imagens,
-            bg='#f39c12',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_imagens.pack(side='left', padx=5)
-
-        # Status
-        self.lbl_status = tk.Label(
-            self.frame_carregar,
-            text="",
-            font=("Arial", 10),
-            bg='#2c3e50',
-            fg='#f39c12'
-        )
-        self.lbl_status.pack(pady=10)
-
-        # Botão sair
-        btn_sair = tk.Button(
-            self.frame_carregar,
-            text="🚪 Sair",
-            command=self.sair,
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 10),
-            cursor='hand2'
-        )
-        btn_sair.pack(pady=10)
-
-        # Modo atual
-        self.modo_atual = 'estudo'
-
-    def definir_diretorio_teorias(self):
-        """Define o diretório onde estão os arquivos de teoria"""
-        try:
-            from tkinter import filedialog
-            diretorio = filedialog.askdirectory(
-                title="Selecione o diretório com os arquivos de teoria (.docx)"
-            )
-            if diretorio:
-                self.diretorio_teorias = diretorio
-                messagebox.showinfo(
-                    "Diretório Definido",
-                    f"Diretório de teorias definido:\n{diretorio}"
-                )
-                self.lbl_status.config(text=f"✅ Diretório de teorias: {os.path.basename(diretorio)}")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao selecionar diretório: {e}")
-
-    def definir_diretorio_imagens(self):
-        """Define o diretório onde estão as imagens das questões"""
-        try:
-            from tkinter import filedialog
-            diretorio = filedialog.askdirectory(
-                title="Selecione o diretório com as imagens das questões"
-            )
-            if diretorio:
-                self.diretorio_imagens = diretorio
-                messagebox.showinfo(
-                    "Diretório Definido",
-                    f"Diretório de imagens definido:\n{diretorio}"
-                )
-                self.lbl_status.config(text=f"✅ Diretório de imagens: {os.path.basename(diretorio)}")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao selecionar diretório: {e}")
-
-    def sair(self):
-        """Salva progresso antes de sair"""
-        if self.questoes_agrupadas:
-            resposta = messagebox.askyesno(
-                "Salvar Progresso",
-                "Deseja salvar seu progresso antes de sair?"
-            )
-            if resposta:
-                self.salvar_progresso()
-
-        self.root.quit()
-
-    def definir_modo(self, modo):
-        """Define o modo de estudo ou prova"""
-        self.modo_atual = modo
-
-        if modo == 'prova':
-            # Configurar temporizador para prova
-            self.timer_ativo = False
-            self.tempo_restante = None
-
-            # Perguntar tempo da prova
-            tempo_str = simpledialog.askstring(
-                "Tempo da Prova",
-                "Digite o tempo da prova em minutos:",
-                initialvalue="60"
-            )
-
-            if tempo_str:
-                try:
-                    minutos = int(tempo_str)
-                    self.tempo_prova = minutos * 60
-                    self.lbl_temporizador.config(text=f"⏱️ Tempo: {minutos:02d}:00")
-                    messagebox.showinfo(
-                        "Modo Prova",
-                        f"Modo prova ativado!\n\n"
-                        f"Você terá {minutos} minutos para responder.\n"
-                        f"O temporizador começará na primeira questão."
-                    )
-                except:
-                    messagebox.showwarning("Atenção", "Tempo inválido. Usando 60 minutos.")
-                    self.tempo_prova = 60 * 60
-            else:
-                self.modo_atual = 'estudo'
-                messagebox.showinfo("Informação", "Modo estudo mantido.")
-        else:
-            # Modo estudo
-            self.timer_ativo = False
-            self.tempo_restante = None
-            self.lbl_temporizador.config(text="⏱️ Tempo: 00:00")
-            messagebox.showinfo("Modo Estudo", "Modo estudo ativado!\n\nTempo livre para estudar.")
-
-    def procurar_arquivo(self):
-        """Abre diálogo para selecionar arquivo"""
-        try:
-            from tkinter import filedialog
-            arquivo = filedialog.askopenfilename(
-                title="Selecione o arquivo Excel",
-                filetypes=[("Arquivos Excel", "*.xlsx *.xls *.xlsm"), ("Todos arquivos", "*.*")]
-            )
-            if arquivo:
-                self.entry_arquivo.delete(0, tk.END)
-                self.entry_arquivo.insert(0, arquivo)
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao selecionar arquivo: {e}")
-
-    def eh_algarismo_romano(self, texto):
-        """Verifica se o texto é um algarismo romano (I, II, III, IV, V, etc.)"""
-        texto = texto.strip().upper()
-        # Padrão para algarismos romanos: I, II, III, IV, V, VI, VII, VIII, IX, X
-        padrao_romano = r'^[IVXLCDM]+$'
-        return bool(re.match(padrao_romano, texto)) and len(texto) <= 5
-
-    def agrupar_questoes_corretamente(self, df):
-        """Agrupa corretamente as linhas da mesma questão (cada alternativa em linha separada)"""
-        questoes = []
-        questao_atual = None
-
-        for idx, row in df.iterrows():
-            # Verificar se é uma nova questão (número de questão não é NaN)
-            if pd.notna(row['Questão ']):
-                # Salvar questão anterior se existir
-                if questao_atual is not None:
-                    questoes.append(questao_atual)
-
-                # Criar nova questão
-                questao_atual = {
-                    'tomo': row['TOMO'] if pd.notna(row['TOMO']) else "N/A",
-                    'numero': row['Questão '],
-                    'enunciado': row['Enunciado'] if pd.notna(row['Enunciado']) else "",
-                    'imagem': row['Imagem'] if pd.notna(row.get('Imagem', '')) else "",
-                    # MUDADO DE "Introdução teórica" para "Imagem"
-                    'alternativas': [],
-                    'usa_algarismos_romanos': False  # Flag para detectar romanos
-                }
-
-            # Adicionar alternativa (mesmo que seja continuação da questão anterior)
-            if pd.notna(row['Alternativas']):
-                alternativa = {
-                    'letra': str(row['Alternativas']).strip(),
-                    'texto': str(row['Textos das Alternativas']).strip() if pd.notna(
-                        row['Textos das Alternativas']) else "",
-                    'analise': str(row['Análise das alternativas ']).strip() if pd.notna(
-                        row['Análise das alternativas ']) else "",
-                    'correta': str(row['Alternativa correta']).strip() == 'X' if pd.notna(
-                        row['Alternativa correta']) else False
-                }
-                questao_atual['alternativas'].append(alternativa)
-
-                # Verificar se é algarismo romano
-                if self.eh_algarismo_romano(str(row['Alternativas'])):
-                    questao_atual['usa_algarismos_romanos'] = True
-
-        # Não esquecer da última questão
-        if questao_atual is not None:
-            questoes.append(questao_atual)
-
-        return questoes
-
-    def carregar_planilha(self):
-        """Carrega a planilha Excel com tratamento para diferentes formatos"""
-        arquivo = self.entry_arquivo.get().strip()
-
-        if not arquivo:
-            messagebox.showwarning("Atenção", "Por favor, informe o nome do arquivo!")
-            return
-
-        if not os.path.exists(arquivo):
-            messagebox.showerror("Erro", f"Arquivo não encontrado: {arquivo}")
-            return
-
-        try:
-            self.lbl_status.config(text="⏳ Carregando planilha...")
-            self.root.update()
-
-            # Tentar carregar com diferentes engines dependendo da extensão
-            extensao = os.path.splitext(arquivo)[1].lower()
-
-            if extensao == '.xlsx' or extensao == '.xlsm':
-                # Usar openpyxl para arquivos .xlsx
-                self.df = pd.read_excel(arquivo, engine='openpyxl')
-            elif extensao == '.xls':
-                # Usar xlrd para arquivos .xls (antigos)
-                self.df = pd.read_excel(arquivo, engine='xlrd')
-            else:
-                # Deixar pandas escolher o engine
-                self.df = pd.read_excel(arquivo)
-
-            # Agrupar questões CORRETAMENTE
-            self.questoes_agrupadas = self.agrupar_questoes_corretamente(self.df)
-
-            if len(self.questoes_agrupadas) == 0:
-                messagebox.showwarning("Atenção", "Nenhuma questão encontrada na planilha!")
-                return
-
-            # Resetar estatísticas para nova planilha
-            self.total_acertos = 0
-            self.total_erros = 0
-            self.questoes_respondidas = set()
-            self.atualizar_estatisticas()
-
-            self.lbl_status.config(text=f"✅ {len(self.questoes_agrupadas)} questões carregadas!")
-
-            # Mostrar primeira questão
-            self.mostrar_questao()
-
-        except ImportError as e:
-            if 'xlrd' in str(e):
-                messagebox.showerror(
-                    "Erro - Biblioteca ausente",
-                    "Biblioteca 'xlrd' não encontrada!\n\n"
-                    "Para arquivos .xls (formato antigo), instale com:\n"
-                    "pip install xlrd\n\n"
-                    "Ou converta o arquivo para .xlsx"
-                )
-            elif 'openpyxl' in str(e):
-                messagebox.showerror(
-                    "Erro - Biblioteca ausente",
-                    "Biblioteca 'openpyxl' não encontrada!\n\n"
-                    "Para arquivos .xlsx, instale com:\n"
-                    "pip install openpyxl"
-                )
-            else:
-                messagebox.showerror("Erro de Importação", f"{e}")
-            self.lbl_status.config(text="")
-
-        except Exception as e:
-            messagebox.showerror(
-                "Erro ao carregar planilha",
-                f"Erro: {e}\n\n"
-                "Tente:\n"
-                "1. Verificar se o arquivo não está aberto em outro programa\n"
-                "2. Converter o arquivo para formato .xlsx\n"
-                "3. Verificar se as colunas estão nomeadas corretamente"
-            )
-            self.lbl_status.config(text="")
-
-    def mostrar_questao(self):
-        """Mostra a questão atual com TODAS as alternativas"""
-
-        # Limpar frame principal
-        for widget in self.frame_principal.winfo_children():
-            widget.destroy()
-
-        questao = self.questoes_agrupadas[self.questao_atual]
-
-        # Iniciar temporizador no modo prova (primeira questão)
-        if self.modo_atual == 'prova' and not self.timer_ativo and self.tempo_restante is None:
-            self.iniciar_temporizador_prova()
-
-        # Frame container com scrollbar
-        canvas = tk.Canvas(self.frame_principal, bg='#2c3e50')
-        scrollbar = ttk.Scrollbar(self.frame_principal, orient="vertical", command=canvas.yview)
-        frame_container = tk.Frame(canvas, bg='#2c3e50')
-
-        frame_container.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=frame_container, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Cabeçalho
-        frame_cabecalho = tk.Frame(frame_container, bg='#34495e')
-        frame_cabecalho.pack(fill='x', pady=(0, 20))
-
-        lbl_info = tk.Label(
-            frame_cabecalho,
-            text=f"📖 TOMO {questao['tomo']} - Questão {int(questao['numero'])}",
-            font=("Arial", 14, "bold"),
-            bg='#34495e',
-            fg='white'
-        )
-        lbl_info.pack(pady=10)
-
-        # Indicador de algarismos romanos
-        '''if questao['usa_algarismos_romanos']:
-            lbl_romano = tk.Label(
-                frame_cabecalho,
-                text="ℹ️ Esta questão usa algarismos romanos (I, II, III...)",
-                font=("Arial", 10, "italic"),
-                bg='#34495e',
-                fg='#f39c12'
-            )
-            lbl_romano.pack(pady=(0, 5))'''
-
-        # Progresso
-        frame_progresso = tk.Frame(frame_cabecalho, bg='#34495e')
-        frame_progresso.pack(pady=5)
-
-        progresso = f"Questão {self.questao_atual + 1} de {len(self.questoes_agrupadas)}"
-        lbl_progresso = tk.Label(
-            frame_progresso,
-            text=progresso,
-            font=("Arial", 10),
-            bg='#34495e',
-            fg='#f39c12'
-        )
-        lbl_progresso.pack()
-
-        # Botão para abrir enunciado completo em janela separada
-        btn_enunciado_completo = tk.Button(
-            frame_cabecalho,
-            text="📄 Ver Enunciado Completo",
-            command=self.abrir_enunciado_completo,
-            bg='#3498db',
-            fg='white',
-            font=("Arial", 10, "bold"),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_enunciado_completo.pack(pady=(5, 0))
-
-        # Enunciado
-        frame_enunciado = tk.Frame(frame_container, bg='#2c3e50')
-        frame_enunciado.pack(fill='x', pady=(0, 20))
-
-        lbl_enun_titulo = tk.Label(
-            frame_enunciado,
-            text="📝 Enunciado:",
-            font=("Arial", 12, "bold"),
-            bg='#2c3e50',
-            fg='white'
-        )
-        lbl_enun_titulo.pack(anchor='w', pady=(0, 5))
-
-        # Texto do enunciado (versão resumida)
-        enunciado_resumido = questao['enunciado']
-        #if len(enunciado_resumido) > 800:
-        #    enunciado_resumido = enunciado_resumido[:800] + "..."
-
-        txt_enunciado = scrolledtext.ScrolledText(
-            frame_enunciado,
-            wrap=tk.WORD,
-            font=("Arial", 11),
-            bg='#ecf0f1',
-            fg='#2c3e50',
-            height=6,
-            padx=15,
-            pady=15
-        )
-        txt_enunciado.insert(tk.END, enunciado_resumido)
-        txt_enunciado.config(state='disabled')
-        txt_enunciado.pack(fill='x')
-
-        # Imagem da questão (se existir) - APÓS O ENUNCIADO
-        if questao['imagem']:
-            self.mostrar_imagem_questao(questao['imagem'], frame_container)
-
-        # Alternativas - AGORA MOSTRANDO TODAS!
-        frame_alternativas = tk.Frame(frame_container, bg='#2c3e50')
-        frame_alternativas.pack(fill='x', pady=(0, 20))
-
-        lbl_alt = tk.Label(
-            frame_alternativas,
-            text="Escolha uma alternativa:",
-            font=("Arial", 12, "bold"),
-            bg='#2c3e50',
-            fg='white'
-        )
-        lbl_alt.pack(anchor='w', pady=(10, 15))
-
-        # Variável para armazenar seleção
-        self.var_alternativa = tk.StringVar()
-        self.var_alternativa.set("")
-
-        # Armazenar referências aos botões de alternativa
-        self.botoes_alternativas = {}
-
-        # Criar botões para TODAS as alternativas
-        for alt in questao['alternativas']:
-            frame_alt = tk.Frame(frame_alternativas, bg='#2c3e50')
-            frame_alt.pack(fill='x', pady=8)
-
-            texto_completo = f"{alt['letra']}) {alt['texto']}"
-
-            radio = tk.Radiobutton(
-                frame_alt,
-                text=texto_completo,
-                variable=self.var_alternativa,
-                value=alt['letra'],
-                font=("Arial", 11),
-                bg='#2c3e50',
-                fg='white',
-                selectcolor='#34495e',
-                activebackground='#2c3e50',
-                activeforeground='white',
-                anchor='w',
-                justify='left',
-                wraplength=800
-            )
-            radio.pack(fill='x', padx=10)
-            self.botoes_alternativas[alt['letra']] = radio
-
-        # Área de feedback (inicialmente oculta)
-        self.frame_feedback = tk.Frame(frame_container, bg='#2c3e50')
-        self.frame_feedback.pack(fill='x', pady=(0, 20))
-
-        # Botões de navegação
-        frame_botoes = tk.Frame(frame_container, bg='#2c3e50')
-        frame_botoes.pack(fill='x', pady=20)
-
-        # Botão anterior
-        if self.questao_atual > 0:
-            btn_anterior = tk.Button(
-                frame_botoes,
-                text="⬅️ Anterior",
-                command=self.questao_anterior,
-                bg='#95a5a6',
-                fg='white',
-                font=("Arial", 11, "bold"),
-                padx=20,
-                cursor='hand2'
-            )
-            btn_anterior.pack(side='left', padx=5)
-
-        # Botão verificar resposta
-        btn_verificar = tk.Button(
-            frame_botoes,
-            text="✅ Verificar Resposta",
-            command=self.verificar_resposta,
-            bg='#27ae60',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            cursor='hand2'
-        )
-        btn_verificar.pack(side='left', padx=5)
-
-        # Botão mostrar resposta (desabilitado inicialmente)
-        self.btn_mostrar_resposta = tk.Button(
-            frame_botoes,
-            text="🔍 Mostrar Resposta",
-            command=self.mostrar_resposta_completa,
-            bg='#f39c12',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            state='disabled',
-            cursor='hand2'
-        )
-        self.btn_mostrar_resposta.pack(side='left', padx=5)
-
-        # Botão ver teoria
-        btn_ver_teorias = tk.Button(
-            frame_botoes,
-            text="📖 Ver Teoria",
-            command=self.abrir_teorias,
-            bg='#9b59b6',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            cursor='hand2'
-        )
-        btn_ver_teorias.pack(side='left', padx=5)
-
-        # Botão próxima
-        btn_proxima = tk.Button(
-            frame_botoes,
-            text="Próxima ➡️",
-            command=self.proxima_questao,
-            bg='#3498db',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            cursor='hand2'
-        )
-        btn_proxima.pack(side='right', padx=5)
-
-        # Botão menu principal
-        btn_menu = tk.Button(
-            frame_botoes,
-            text="🏠 Menu Principal",
-            command=self.voltar_menu,
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 11),
-            padx=15,
-            cursor='hand2'
-        )
-        btn_menu.pack(side='right', padx=5)
-
-    def abrir_enunciado_completo(self):
-        """Abre janela com o enunciado completo da questão atual"""
-        try:
-            from PIL import Image, ImageTk, ImageOps
-            PIL_DISPONIVEL = True
-        except ImportError:
-            PIL_DISPONIVEL = False
-
-        questao = self.questoes_agrupadas[self.questao_atual]
-
-        # Criar janela para exibir enunciado completo
-        janela_enunciado = tk.Toplevel(self.root)
-        janela_enunciado.title(f"Enunciado Completo - TOMO {questao['tomo']} Questão {int(questao['numero'])}")
-        janela_enunciado.geometry("900x700")
-        janela_enunciado.configure(bg='#2c3e50')
-
-        # Frame container com scrollbar
-        canvas = tk.Canvas(janela_enunciado, bg='#2c3e50')
-        scrollbar = ttk.Scrollbar(janela_enunciado, orient="vertical", command=canvas.yview)
-        frame = tk.Frame(canvas, bg='#2c3e50')
-
-        frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Título
-        lbl_titulo = tk.Label(
-            frame,
-            text=f"📖 Enunciado Completo - TOMO {questao['tomo']} Questão {int(questao['numero'])}",
-            font=("Arial", 16, "bold"),
-            bg='#2c3e50',
-            fg='white',
-            pady=20
-        )
-        lbl_titulo.pack()
-
-        # Enunciado completo
-        frame_enunciado = tk.Frame(frame, bg='#2c3e50')
-        frame_enunciado.pack(fill='x', padx=20, pady=10)
-
-        lbl_enun_titulo = tk.Label(
-            frame_enunciado,
-            text="📝 Enunciado:",
-            font=("Arial", 14, "bold"),
-            bg='#2c3e50',
-            fg='white'
-        )
-        lbl_enun_titulo.pack(anchor='w', pady=(0, 10))
-
-        txt_enunciado = scrolledtext.ScrolledText(
-            frame_enunciado,
-            wrap=tk.WORD,
-            font=("Arial", 12),
-            bg='#ecf0f1',
-            fg='#2c3e50',
-            padx=20,
-            pady=20,
-            height=26
-        )
-        txt_enunciado.insert(tk.END, questao['enunciado'])
-        txt_enunciado.config(state='disabled')
-        txt_enunciado.pack(fill='both', expand=True)
-
-        # Imagem da questão (se existir)
-        if questao['imagem'] and PIL_DISPONIVEL:
-            self.mostrar_imagem_completa(questao['imagem'], frame)
-
-        # Botão fechar
-        btn_fechar = tk.Button(
-            frame,
-            text="Fechar",
-            command=janela_enunciado.destroy,
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_fechar.pack(pady=(20, 20))
-
-    def mostrar_imagem_completa(self, nome_imagem, frame_pai):
-        """Mostra a imagem da questão no enunciado completo"""
-        try:
-            from PIL import Image, ImageTk, ImageOps
-            PIL_DISPONIVEL = True
-        except ImportError:
-            PIL_DISPONIVEL = False
-            return
-
-        if not PIL_DISPONIVEL:
-            return
-
-        # Verificar se o diretório existe
-        if not os.path.exists(self.diretorio_imagens):
-            return
-
-        # Procurar imagem com diferentes extensões
-        extensoes = ['.png', '.jpg', '.jpeg', '.gif', '.bmp']
-        caminho_imagem = None
-
-        for ext in extensoes:
-            caminho_teste = os.path.join(self.diretorio_imagens, nome_imagem + ext)
-            if os.path.exists(caminho_teste):
-                caminho_imagem = caminho_teste
-                break
-
-        # Se não encontrou, tentar o nome exato
-        if not caminho_imagem:
-            caminho_teste = os.path.join(self.diretorio_imagens, nome_imagem)
-            if os.path.exists(caminho_teste):
-                caminho_imagem = caminho_teste
-
-        # Se ainda não encontrou, retornar
-        if not caminho_imagem:
-            return
-
-        try:
-            # Abrir imagem com PIL
-            img_pil = Image.open(caminho_imagem)
-
-            # Redimensionar se necessário (máximo 800px de largura)
-            largura_max = 800
-            if img_pil.width > largura_max:
-                proporcao = largura_max / img_pil.width
-                nova_altura = int(img_pil.height * proporcao)
-                img_pil = img_pil.resize((largura_max, nova_altura), Image.Resampling.LANCZOS)
-
-            # Converter para PhotoImage
-            img_tk = ImageTk.PhotoImage(img_pil)
-
-            # Criar frame para imagem
-            frame_imagem = tk.Frame(frame_pai, bg='#2c3e50')
-            frame_imagem.pack(fill='x', padx=20, pady=20)
-
-            # Criar label para imagem
-            lbl_imagem = tk.Label(frame_imagem, image=img_tk, bg='#2c3e50')
-            lbl_imagem.image = img_tk  # Manter referência
-            lbl_imagem.pack(pady=10)
-
-            # Adicionar legenda
-            lbl_legenda = tk.Label(
-                frame_imagem,
-                text=f"Figura: {nome_imagem}",
-                font=("Arial", 10, "italic"),
-                bg='#2c3e50',
-                fg='#95a5a6'
-            )
-            lbl_legenda.pack(pady=(10, 0))
-
-        except Exception as e:
-            print(f"Erro ao exibir imagem {nome_imagem}: {e}")
-
-    def mostrar_imagem_questao(self, nome_imagem, frame_pai):
-        """Mostra a imagem da questão no enunciado"""
-        try:
-            from PIL import Image, ImageTk, ImageOps
-            PIL_DISPONIVEL = True
-        except ImportError:
-            PIL_DISPONIVEL = False
-            print("Pillow não instalado. Imagens não serão exibidas.")
-            return
-
-        if not PIL_DISPONIVEL:
-            return
-
-        # Verificar se o diretório existe
-        if not os.path.exists(self.diretorio_imagens):
-            resposta = messagebox.askyesno(
-                "Diretório não encontrado",
-                f"Diretório '{self.diretorio_imagens}' não encontrado.\n\n"
-                "Deseja selecionar o diretório agora?"
-            )
-            if resposta:
-                self.definir_diretorio_imagens()
-                # Tentar novamente mostrar imagem
-                self.mostrar_imagem_questao(nome_imagem, frame_pai)
-            return
-
-        # Procurar imagem com diferentes extensões
-        extensoes = ['.png', '.jpg', '.jpeg', '.gif', '.bmp']
-        caminho_imagem = None
-
-        for ext in extensoes:
-            caminho_teste = os.path.join(self.diretorio_imagens, nome_imagem + ext)
-            if os.path.exists(caminho_teste):
-                caminho_imagem = caminho_teste
-                break
-
-        # Se não encontrou, tentar o nome exato
-        if not caminho_imagem:
-            caminho_teste = os.path.join(self.diretorio_imagens, nome_imagem)
-            if os.path.exists(caminho_teste):
-                caminho_imagem = caminho_teste
-
-        # Se ainda não encontrou, mostrar mensagem
-        if not caminho_imagem:
-            print(f"Imagem não encontrada: {nome_imagem}")
-            return
-
-        try:
-            # Abrir imagem com PIL
-            img_pil = Image.open(caminho_imagem)
-
-            # Redimensionar se necessário (máximo 800px de largura)
-            largura_max = 800
-            if img_pil.width > largura_max:
-                proporcao = largura_max / img_pil.width
-                nova_altura = int(img_pil.height * proporcao)
-                img_pil = img_pil.resize((largura_max, nova_altura), Image.Resampling.LANCZOS)
-
-            # Converter para PhotoImage
-            img_tk = ImageTk.PhotoImage(img_pil)
-
-            # Criar frame para imagem
-            frame_imagem = tk.Frame(frame_pai, bg='#2c3e50')
-            frame_imagem.pack(fill='x', pady=(0, 20))
-
-            # Criar label para imagem
-            lbl_imagem = tk.Label(frame_imagem, image=img_tk, bg='#2c3e50')
-            lbl_imagem.image = img_tk  # Manter referência
-            lbl_imagem.pack(padx=20, pady=10)
-
-            # Adicionar legenda
-            lbl_legenda = tk.Label(
-                frame_imagem,
-                text=f"Figura: {nome_imagem}",
-                font=("Arial", 9, "italic"),
-                bg='#2c3e50',
-                fg='#95a5a6'
-            )
-            lbl_legenda.pack(pady=(0, 10))
-
-        except Exception as e:
-            print(f"Erro ao exibir imagem {nome_imagem}: {e}")
-
-    def abrir_teorias(self):
-        """Abre janela com a teoria da questão atual (incluindo imagens)"""
-        if not DOCX_DISPONIVEL:
-            messagebox.showerror(
-                "Erro - Biblioteca ausente",
-                "Biblioteca 'python-docx' não encontrada!\n\n"
-                "Para ler arquivos .docx, instale com:\n"
-                "pip install python-docx\n\n"
-                "Para exibir imagens, também instale:\n"
-                "pip install pillow"
-            )
-            return
-
-        # Verificar se Pillow está instalado para imagens
-        try:
-            from PIL import Image, ImageTk, ImageOps
-            PIL_DISPONIVEL = True
-        except ImportError:
-            PIL_DISPONIVEL = False
-            messagebox.showwarning(
-                "Aviso",
-                "Biblioteca 'Pillow' não encontrada.\n"
-                "As imagens não serão exibidas.\n\n"
-                "Instale com: pip install pillow"
-            )
-
-        questao = self.questoes_agrupadas[self.questao_atual]
-
-        # Converter TOMO para inteiro (remover .0)
-        tomo = int(float(questao['tomo'])) if pd.notna(questao['tomo']) else 0
-
-        # Converter número da questão para inteiro
-        numero = int(float(questao['numero'])) if pd.notna(questao['numero']) else 0
-
-        # Verificar se o diretório existe
-        if not os.path.exists(self.diretorio_teorias):
-            resposta = messagebox.askyesno(
-                "Diretório não encontrado",
-                f"Diretório '{self.diretorio_teorias}' não encontrado.\n\n"
-                "Deseja selecionar o diretório agora?"
-            )
-            if resposta:
-                self.definir_diretorio_teorias()
-                self.abrir_teorias()  # Tentar novamente
-            return
-
-        # Gerar possíveis nomes de arquivo
-        possiveis_nomes = [
-            f"T{tomo}Q{numero}.docx",  # Formato: T1Q2.docx
-            f"T{tomo}Q{numero:02d}.docx",  # Formato: T1Q02.docx (com zero à esquerda)
-            f"Tomo{tomo}Questao{numero}.docx",  # Formato: Tomo1Questao2.docx
-            f"Tomo {tomo} Questão {numero}.docx",  # Formato: Tomo 1 Questão 2.docx
-            f"Tomo{tomo}Q{numero}.docx",  # Formato: Tomo1Q2.docx
-        ]
-
-        caminho_arquivo = None
-
-        # Procurar por qualquer um dos formatos possíveis
-        for nome in possiveis_nomes:
-            caminho_teste = os.path.join(self.diretorio_teorias, nome)
-            if os.path.exists(caminho_teste):
-                caminho_arquivo = caminho_teste
-                break
-
-        # Se não encontrou, mostrar mensagem detalhada
-        if not caminho_arquivo:
-            # Listar arquivos disponíveis no diretório para ajudar
-            try:
-                arquivos = os.listdir(self.diretorio_teorias)
-                arquivos_docx = [f for f in arquivos if f.endswith('.docx')]
-
-                if arquivos_docx:
-                    lista_arquivos = "\n".join(arquivos_docx[:10])  # Mostrar até 10 arquivos
-                    if len(arquivos_docx) > 10:
-                        lista_arquivos += f"\n... e mais {len(arquivos_docx) - 10} arquivos"
-
-                    mensagem = f"Arquivo de teoria não encontrado para Tomo {tomo} Questão {numero}.\n\n"
-                    mensagem += "Formatos procurados:\n"
-                    for nome in possiveis_nomes:
-                        mensagem += f"  - {nome}\n"
-                    mensagem += f"\nArquivos .docx encontrados no diretório:\n{lista_arquivos}\n\n"
-                    mensagem += "Verifique se o arquivo existe e está nomeado corretamente."
-
-                    messagebox.showwarning("Teoria não encontrada", mensagem)
-                else:
-                    messagebox.showwarning(
-                        "Teoria não encontrada",
-                        f"Nenhum arquivo .docx encontrado no diretório:\n{self.diretorio_teorias}\n\n"
-                        "Verifique se o diretório está correto."
-                    )
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao listar arquivos: {e}")
-
-            return
-
-        try:
-            # Criar janela para exibir teoria
-            janela_teorias = tk.Toplevel(self.root)
-            janela_teorias.title(f"Teoria - TOMO {tomo} Questão {numero}")
-            janela_teorias.geometry("900x700")
-            janela_teorias.configure(bg='#2c3e50')
-
-            # Frame container com scrollbar
-            canvas = tk.Canvas(janela_teorias, bg='#2c3e50')
-            scrollbar = ttk.Scrollbar(janela_teorias, orient="vertical", command=canvas.yview)
-            frame = tk.Frame(canvas, bg='#2c3e50')
-
-            frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-            )
-
-            canvas.create_window((0, 0), window=frame, anchor="nw")
-            canvas.configure(yscrollcommand=scrollbar.set)
-
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-
-            # Título
-            lbl_titulo = tk.Label(
-                frame,
-                text=f"📖 Teoria - TOMO {tomo} Questão {numero}",
-                font=("Arial", 16, "bold"),
-                bg='#2c3e50',
-                fg='white',
-                pady=20
-            )
-            lbl_titulo.pack()
-
-            # Ler arquivo .docx
-            doc = Document(caminho_arquivo)
-
-            # Lista para armazenar referências de imagens (para evitar garbage collection)
-            self.imagens_refs = []
-
-            # Processar cada parágrafo do documento
-            for paragrafo in doc.paragraphs:
-                texto = paragrafo.text.strip()
-
-                # Verificar se o parágrafo tem imagens
-                tem_imagem = False
-
-                # Verificar runs para encontrar imagens
-                for run in paragrafo.runs:
-                    # Verificar se o run contém imagens
-                    r = run._element
-                    blips = r.xpath('.//a:blip')
-
-                    if blips:
-                        tem_imagem = True
-                        break
-
-                # Se tiver imagem, processar
-                if tem_imagem:
-                    try:
-                        # Extrair imagens do documento
-                        import zipfile
-                        from io import BytesIO
-
-                        # Abrir o arquivo .docx como zip
-                        with zipfile.ZipFile(caminho_arquivo) as docx_zip:
-                            # Listar todas as imagens
-                            imagens = [f for f in docx_zip.namelist() if f.startswith('word/media/')]
-
-                            for img_path in imagens:
-                                try:
-                                    # Ler dados da imagem
-                                    img_data = docx_zip.read(img_path)
-
-                                    # Abrir imagem com PIL
-                                    img_pil = Image.open(BytesIO(img_data))
-
-                                    # Redimensionar se necessário (máximo 800px de largura)
-                                    largura_max = 800
-                                    if img_pil.width > largura_max:
-                                        proporcao = largura_max / img_pil.width
-                                        nova_altura = int(img_pil.height * proporcao)
-                                        img_pil = img_pil.resize((largura_max, nova_altura), Image.Resampling.LANCZOS)
-
-                                    # Converter para PhotoImage
-                                    img_tk = ImageTk.PhotoImage(img_pil)
-
-                                    # Criar label para imagem
-                                    lbl_imagem = tk.Label(frame, image=img_tk, bg='#2c3e50')
-                                    lbl_imagem.image = img_tk  # Manter referência
-                                    lbl_imagem.pack(padx=20, pady=10)
-
-                                    # Armazenar referência para evitar garbage collection
-                                    self.imagens_refs.append(img_tk)
-
-                                    # Adicionar legenda
-                                    lbl_legenda = tk.Label(
-                                        frame,
-                                        text=f"Figura: {os.path.basename(img_path)}",
-                                        font=("Arial", 9, "italic"),
-                                        bg='#2c3e50',
-                                        fg='#95a5a6'
-                                    )
-                                    lbl_legenda.pack(pady=(0, 15))
-
-                                except Exception as e:
-                                    print(f"Erro ao processar imagem {img_path}: {e}")
-                                    continue
-
-                    except Exception as e:
-                        print(f"Erro ao extrair imagens: {e}")
-
-                # Se tiver texto, exibir
-                if texto:
-                    # Verificar estilo do parágrafo para formatação
-                    if paragrafo.style.name.startswith('Heading'):
-                        # Títulos em negrito e maior
-                        try:
-                            nivel_heading = int(paragrafo.style.name.replace('Heading', ''))
-                            fonte_tamanho = 16 - (nivel_heading - 1) * 2
-                            if fonte_tamanho < 10:
-                                fonte_tamanho = 10
-                        except:
-                            fonte_tamanho = 14
-
-                        lbl_texto = tk.Label(
-                            frame,
-                            text=texto,
-                            font=("Arial", fonte_tamanho, "bold"),
-                            bg='#2c3e50',
-                            fg='white',
-                            wraplength=850,
-                            justify='left'
-                        )
-                        lbl_texto.pack(anchor='w', padx=20, pady=(15, 5))
-                    else:
-                        # Parágrafos normais
-                        txt_paragrafo = tk.Text(
-                            frame,
-                            wrap=tk.WORD,
-                            font=("Arial", 11),
-                            bg='#ecf0f1',
-                            fg='#2c3e50',
-                            padx=15,
-                            pady=10,
-                            height=3,
-                            relief='flat'
-                        )
-                        txt_paragrafo.insert(tk.END, texto)
-                        txt_paragrafo.config(state='disabled')
-                        txt_paragrafo.pack(fill='x', padx=20, pady=5)
-
-            # Botão fechar
-            btn_fechar = tk.Button(
-                frame,
-                text="Fechar",
-                command=janela_teorias.destroy,
-                bg='#e74c3c',
-                fg='white',
-                font=("Arial", 11, "bold"),
-                padx=30,
-                pady=10,
-                cursor='hand2'
-            )
-            btn_fechar.pack(pady=(20, 20))
-
-        except Exception as e:
-            messagebox.showerror(
-                "Erro ao ler teoria",
-                f"Erro ao ler o arquivo {os.path.basename(caminho_arquivo)}:\n\n{e}"
-            )
-
-    def iniciar_temporizador_prova(self):
-        """Inicia o temporizador para o modo prova"""
-        self.timer_ativo = True
-        self.tempo_restante = self.tempo_prova
-        self.atualizar_temporizador()
-
-    def atualizar_temporizador(self):
-        """Atualiza o display do temporizador"""
-        if self.timer_ativo and self.tempo_restante is not None:
-            minutos = self.tempo_restante // 60
-            segundos = self.tempo_restante % 60
-
-            self.lbl_temporizador.config(text=f"⏱️ Tempo: {minutos:02d}:{segundos:02d}")
-
-            # Alerta quando faltar pouco tempo
-            if self.tempo_restante <= 300:  # 5 minutos
-                self.lbl_temporizador.config(fg='#e74c3c')
-
-            if self.tempo_restante > 0:
-                self.tempo_restante -= 1
-                self.timer_id = self.root.after(1000, self.atualizar_temporizador)
-            else:
-                # Tempo esgotado
-                self.timer_ativo = False
-                messagebox.showwarning(
-                    "⏰ Tempo Esgotado!",
-                    "Seu tempo acabou!\n\nDeseja continuar respondendo sem limite de tempo?",
-                    type='yesno'
-                )
-
-    def verificar_resposta(self):
-        """Verifica se a resposta está correta e mostra feedback na tela"""
-        if not self.var_alternativa.get():
-            messagebox.showwarning("Atenção", "Por favor, selecione uma alternativa!")
-            return
-
-        self.alternativa_selecionada = self.var_alternativa.get()
-        questao = self.questoes_agrupadas[self.questao_atual]
-
-        # Encontrar alternativa correta
-        alt_correta = None
-        for alt in questao['alternativas']:
-            if alt['correta']:
-                alt_correta = alt['letra']
-                break
-
-        # Verificar se acertou
-        acertou = (self.alternativa_selecionada == alt_correta)
-
-        # Atualizar estatísticas
-        if self.questao_atual not in self.questoes_respondidas:
-            if acertou:
-                self.total_acertos += 1
-            else:
-                self.total_erros += 1
-            self.questoes_respondidas.add(self.questao_atual)
-            self.atualizar_estatisticas()
-
-        # Limpar frame de feedback anterior
-        for widget in self.frame_feedback.winfo_children():
-            widget.destroy()
-
-        # Criar feedback visual
-        if acertou:
-            # Feedback positivo - verde
-            frame_resultado = tk.Frame(self.frame_feedback, bg='#27ae60', padx=20, pady=20)
-            frame_resultado.pack(fill='x')
-
-            lbl_resultado = tk.Label(
-                frame_resultado,
-                text="🎉 PARABÉNS! Resposta CORRETA! 🎉",
-                font=("Arial", 16, "bold"),
-                bg='#27ae60',
-                fg='white'
-            )
-            lbl_resultado.pack(pady=(0, 10))
-
-            lbl_detalhe = tk.Label(
-                frame_resultado,
-                text=f"Você acertou! A alternativa {self.alternativa_selecionada} está correta.",
-                font=("Arial", 12),
-                bg='#27ae60',
-                fg='white'
-            )
-            lbl_detalhe.pack()
-
-            # Destacar alternativa selecionada em verde
-            if self.alternativa_selecionada in self.botoes_alternativas:
-                self.botoes_alternativas[self.alternativa_selecionada].config(
-                    bg='#27ae60',
-                    fg='white',
-                    font=("Arial", 11, "bold")
-                )
-
-        else:
-            # Feedback negativo - vermelho
-            frame_resultado = tk.Frame(self.frame_feedback, bg='#e74c3c', padx=20, pady=20)
-            frame_resultado.pack(fill='x')
-
-            lbl_resultado = tk.Label(
-                frame_resultado,
-                text="❌ Resposta INCORRETA ❌",
-                font=("Arial", 16, "bold"),
-                bg='#e74c3c',
-                fg='white'
-            )
-            lbl_resultado.pack(pady=(0, 10))
-
-            lbl_detalhe = tk.Label(
-                frame_resultado,
-                text=f"Você escolheu: {self.alternativa_selecionada} | Resposta correta: {alt_correta}",
-                font=("Arial", 12),
-                bg='#e74c3c',
-                fg='white'
-            )
-            lbl_detalhe.pack(pady=(5, 10))
-
-            lbl_dica = tk.Label(
-                frame_resultado,
-                text="Clique em 'Mostrar Resposta' para ver as justificativas!",
-                font=("Arial", 11),
-                bg='#e74c3c',
-                fg='white'
-            )
-            lbl_dica.pack()
-
-            # Destacar alternativa selecionada em vermelho
-            if self.alternativa_selecionada in self.botoes_alternativas:
-                self.botoes_alternativas[self.alternativa_selecionada].config(
-                    bg='#e74c3c',
-                    fg='white',
-                    font=("Arial", 11, "bold")
-                )
-
-            # Destacar alternativa correta em verde
-            if alt_correta in self.botoes_alternativas:
-                self.botoes_alternativas[alt_correta].config(
-                    bg='#27ae60',
-                    fg='white',
-                    font=("Arial", 11, "bold")
-                )
-
-        # Desabilitar seleção
-        for btn in self.botoes_alternativas.values():
-            btn.config(state='disabled')
-
-        # Habilitar botão mostrar resposta
-        self.btn_mostrar_resposta.config(state='normal')
-
-        self.resposta_verificada = True
-
-        # Salvar progresso automaticamente
-        self.salvar_progresso()
-
-    def atualizar_estatisticas(self):
-        """Atualiza o display das estatísticas"""
-        total = self.total_acertos + self.total_erros
-        self.lbl_estatisticas.config(
-            text=f"📊 Acertos: {self.total_acertos} | Erros: {self.total_erros} | Total: {total}"
-        )
-
-    def mostrar_resposta_completa(self):
-        """Mostra a resposta correta e justificativas com botões para cada alternativa"""
-
-        questao = self.questoes_agrupadas[self.questao_atual]
-
-        # Encontrar alternativa correta
-        alt_correta = None
-        for alt in questao['alternativas']:
-            if alt['correta']:
-                alt_correta = alt['letra']
-                break
-
-        # Criar nova janela
-        janela_resposta = tk.Toplevel(self.root)
-        janela_resposta.title("Resposta e Justificativas")
-        janela_resposta.geometry("900x700")
-        janela_resposta.configure(bg='#2c3e50')
-
-        # Frame container com scrollbar
-        canvas = tk.Canvas(janela_resposta, bg='#2c3e50')
-        scrollbar = ttk.Scrollbar(janela_resposta, orient="vertical", command=canvas.yview)
-        frame = tk.Frame(canvas, bg='#2c3e50')
-
-        frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Título
-        lbl_titulo = tk.Label(
-            frame,
-            text="📝 Resposta Correta e Justificativas",
-            font=("Arial", 16, "bold"),
-            bg='#2c3e50',
-            fg='white'
-        )
-        lbl_titulo.pack(pady=(20, 20))
-
-        # Resposta correta
-        frame_resposta = tk.Frame(frame, bg='#34495e', padx=20, pady=20)
-        frame_resposta.pack(fill='x', pady=(0, 20), padx=20)
-
-        if alt_correta:
-            lbl_resposta = tk.Label(
-                frame_resposta,
-                text=f"✅ Alternativa Correta: {alt_correta}",
-                font=("Arial", 14, "bold"),
-                bg='#34495e',
-                fg='#27ae60'
-            )
-            lbl_resposta.pack()
-
-        # Sua resposta
-        if self.alternativa_selecionada:
-            cor = '#27ae60' if self.alternativa_selecionada == alt_correta else '#e74c3c'
-            simbolo = "✅" if self.alternativa_selecionada == alt_correta else "❌"
-
-            lbl_sua_resposta = tk.Label(
-                frame_resposta,
-                text=f"{simbolo} Sua resposta: {self.alternativa_selecionada}",
-                font=("Arial", 12, "bold"),
-                bg='#34495e',
-                fg=cor
-            )
-            lbl_sua_resposta.pack(pady=10)
-
-        # Verificar se usa algarismos romanos
-        if questao['usa_algarismos_romanos']:
-            # Mostrar TODAS as justificativas juntas
-            lbl_just = tk.Label(
-                frame,
-                text="📚 Justificativas de todas as alternativas (algarismos romanos):",
-                font=("Arial", 14, "bold"),
-                bg='#2c3e50',
-                fg='white'
-            )
-            lbl_just.pack(anchor='w', pady=(10, 15), padx=20)
-
-            # Frame para todas as justificativas
-            frame_todas_just = tk.Frame(frame, bg='#ecf0f1', padx=20, pady=20)
-            frame_todas_just.pack(fill='both', expand=True, padx=20, pady=(0, 20))
-
-            # Mostrar justificativa de cada alternativa
-            for alt in questao['alternativas']:
-                self.mostrar_justificativa_no_frame(alt, alt_correta, frame_todas_just)
-
-        else:
-            # Justificativas individuais com botões (comportamento normal)
-            lbl_just = tk.Label(
-                frame,
-                text="📚 Clique em uma alternativa para ver sua justificativa:",
-                font=("Arial", 14, "bold"),
-                bg='#2c3e50',
-                fg='white'
-            )
-            lbl_just.pack(anchor='w', pady=(10, 15), padx=20)
-
-            # Frame para botões de alternativas
-            frame_btns = tk.Frame(frame, bg='#2c3e50')
-            frame_btns.pack(fill='x', pady=(0, 20), padx=20)
-
-            # Criar botão para cada alternativa
-            for alt in questao['alternativas']:
-                cor_btn = '#27ae60' if alt['correta'] else '#3498db'
-
-                btn_alt = tk.Button(
-                    frame_btns,
-                    text=f"Alternativa {alt['letra']}",
-                    command=lambda a=alt, c=alt_correta: self.mostrar_justificativa_individual(a, c, frame),
-                    bg=cor_btn,
-                    fg='white',
-                    font=("Arial", 10, "bold"),
-                    padx=15,
-                    pady=8,
-                    cursor='hand2'
-                )
-                btn_alt.pack(side='left', padx=5)
-
-            # Área de texto para justificativa atual
-            self.frame_justificativa_atual = tk.Frame(frame, bg='#2c3e50')
-            self.frame_justificativa_atual.pack(fill='both', expand=True, padx=20, pady=(0, 20))
-
-            # Mostrar justificativa da alternativa correta por padrão
-            if alt_correta:
-                for alt in questao['alternativas']:
-                    if alt['letra'] == alt_correta:
-                        self.mostrar_justificativa_individual(alt, alt_correta, frame)
-                        break
-            elif questao['alternativas']:
-                self.mostrar_justificativa_individual(questao['alternativas'][0], alt_correta, frame)
-
-        # Botão fechar
-        btn_fechar = tk.Button(
-            frame,
-            text="Fechar",
-            command=janela_resposta.destroy,
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=30,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_fechar.pack(pady=(0, 20))
-
-    def mostrar_justificativa_no_frame(self, alternativa, alt_correta, frame_pai):
-        """Mostra a justificativa de uma alternativa dentro de um frame existente"""
-
-        # Frame para justificativa individual
-        frame_just = tk.Frame(frame_pai, bg='#ffffff', padx=15, pady=15, bd=1, relief='solid')
-        frame_just.pack(fill='x', pady=(0, 15))
-
-        # Cabeçalho
-        eh_correta = alternativa['correta']
-        cor_titulo = '#27ae60' if eh_correta else '#e74c3c'
-        simbolo = "✅" if eh_correta else "❌"
-
-        lbl_titulo = tk.Label(
-            frame_just,
-            text=f"{simbolo} Alternativa {alternativa['letra']}",
-            font=("Arial", 12, "bold"),
-            bg='#ffffff',
-            fg=cor_titulo
-        )
-        lbl_titulo.pack(anchor='w', pady=(0, 8))
-
-        # Texto da alternativa
-        if alternativa['texto']:
-            lbl_texto = tk.Label(
-                frame_just,
-                text=f"Texto: {alternativa['texto']}",
-                font=("Arial", 10, "italic"),
-                bg='#ffffff',
-                fg='#2c3e50',
-                wraplength=800,
-                justify='left'
-            )
-            lbl_texto.pack(anchor='w', pady=(0, 10))
-
-        # Justificativa
-        lbl_just_titulo = tk.Label(
-            frame_just,
-            text="Justificativa:",
-            font=("Arial", 11, "bold"),
-            bg='#ffffff',
-            fg='#2c3e50'
-        )
-        lbl_just_titulo.pack(anchor='w', pady=(5, 3))
-
-        # Texto da justificativa
-        analise = alternativa['analise']
-        if analise.startswith("Alternativa correta."):
-            analise = analise.replace("Alternativa correta.", "", 1).strip()
-        elif analise.startswith("Alternativa incorreta."):
-            analise = analise.replace("Alternativa incorreta.", "", 1).strip()
-
-        lbl_analise = tk.Label(
-            frame_just,
-            text=analise if analise else "Justificativa não disponível.",
-            font=("Arial", 10),
-            bg='#ffffff',
-            fg='#2c3e50',
-            wraplength=800,
-            justify='left'
-        )
-        lbl_analise.pack(anchor='w', pady=(0, 5))
-
-    def mostrar_justificativa_individual(self, alternativa, alt_correta, frame_pai):
-        """Mostra a justificativa de uma alternativa específica"""
-
-        # Limpar frame atual
-        for widget in self.frame_justificativa_atual.winfo_children():
-            widget.destroy()
-
-        # Frame para justificativa
-        frame_just = tk.Frame(self.frame_justificativa_atual, bg='#ecf0f1', padx=20, pady=20)
-        frame_just.pack(fill='both', expand=True)
-
-        # Cabeçalho
-        eh_correta = alternativa['correta']
-        cor_titulo = '#27ae60' if eh_correta else '#e74c3c'
-        simbolo = "✅" if eh_correta else "❌"
-
-        lbl_titulo = tk.Label(
-            frame_just,
-            text=f"{simbolo} Alternativa {alternativa['letra']}",
-            font=("Arial", 13, "bold"),
-            bg='#ecf0f1',
-            fg=cor_titulo
-        )
-        lbl_titulo.pack(anchor='w', pady=(0, 10))
-
-        # Texto da alternativa
-        if alternativa['texto']:
-            lbl_texto = tk.Label(
-                frame_just,
-                text=f"Texto: {alternativa['texto']}",
-                font=("Arial", 11, "italic"),
-                bg='#ecf0f1',
-                fg='#2c3e50',
-                wraplength=800,
-                justify='left'
-            )
-            lbl_texto.pack(anchor='w', pady=(0, 15))
-
-        # Justificativa
-        lbl_just_titulo = tk.Label(
-            frame_just,
-            text="Justificativa:",
-            font=("Arial", 12, "bold"),
-            bg='#ecf0f1',
-            fg='#2c3e50'
-        )
-        lbl_just_titulo.pack(anchor='w', pady=(10, 5))
-
-        # Área de texto para justificativa
-        txt_justificativa = scrolledtext.ScrolledText(
-            frame_just,
-            wrap=tk.WORD,
-            font=("Arial", 11),
-            bg='#ffffff',
-            fg='#2c3e50',
-            padx=15,
-            pady=15,
-            height=12
-        )
-
-        # Limpar "Alternativa correta." ou "Alternativa incorreta." do início
-        analise = alternativa['analise']
-        if analise.startswith("Alternativa correta."):
-            analise = analise.replace("Alternativa correta.", "", 1).strip()
-        elif analise.startswith("Alternativa incorreta."):
-            analise = analise.replace("Alternativa incorreta.", "", 1).strip()
-
-        txt_justificativa.insert(tk.END, analise if analise else "Justificativa não disponível.")
-        txt_justificativa.config(state='disabled')
-        txt_justificativa.pack(fill='both', expand=True)
-
-    def questao_anterior(self):
-        """Volta para questão anterior"""
-        if self.questao_atual > 0:
-            self.questao_atual -= 1
-            self.alternativa_selecionada = None
-            self.resposta_verificada = False
-            self.mostrar_questao()
-
-    def proxima_questao(self):
-        """Vai para próxima questão"""
-        if self.questao_atual < len(self.questoes_agrupadas) - 1:
-            self.questao_atual += 1
-            self.alternativa_selecionada = None
-            self.resposta_verificada = False
-            self.mostrar_questao()
-        else:
-            # Última questão - finalizar prova se estiver no modo prova
-            if self.modo_atual == 'prova':
-                self.finalizar_prova()
-            else:
-                resposta = messagebox.askyesno(
-                    "Fim das questões",
-                    "Você chegou ao fim das questões!\n\nDeseja recomeçar do início?"
-                )
-                if resposta:
-                    self.questao_atual = 0
-                    self.alternativa_selecionada = None
-                    self.resposta_verificada = False
-                    self.mostrar_questao()
-
-    def finalizar_prova(self):
-        """Finaliza o modo prova e mostra resumo"""
-        # Parar temporizador
-        self.timer_ativo = False
-        if self.timer_id:
-            self.root.after_cancel(self.timer_id)
-
-        # Calcular estatísticas
-        total_respondidas = len(self.questoes_respondidas)
-        total_questoes = len(self.questoes_agrupadas)
-        aproveitamento = (self.total_acertos / total_respondidas * 100) if total_respondidas > 0 else 0
-
-        # Mostrar resumo em janela
-        janela_resumo = tk.Toplevel(self.root)
-        janela_resumo.title("Resumo da Prova")
-        janela_resumo.geometry("600x500")
-        janela_resumo.configure(bg='#2c3e50')
-
-        frame_resumo = tk.Frame(janela_resumo, bg='#2c3e50', padx=30, pady=30)
-        frame_resumo.pack(fill='both', expand=True)
-
-        # Título
-        lbl_titulo = tk.Label(
-            frame_resumo,
-            text="🎉 FIM DA PROVA! 🎉",
-            font=("Arial", 20, "bold"),
-            bg='#2c3e50',
-            fg='#f39c12'
-        )
-        lbl_titulo.pack(pady=(0, 20))
-
-        # Estatísticas
-        frame_stats = tk.Frame(frame_resumo, bg='#34495e', padx=20, pady=20)
-        frame_stats.pack(fill='x', pady=10)
-
-        stats_texto = f"""
-📊 RESUMO DA PROVA
-
-Total de questões: {total_questoes}
-Questões respondidas: {total_respondidas}
-
-✅ Acertos: {self.total_acertos}
-❌ Erros: {self.total_erros}
-
-📈 Aproveitamento: {aproveitamento:.1f}%
-
-⏱️ Tempo utilizado: {self.calcular_tempo_utilizado()}
-        """
-
-        lbl_stats = tk.Label(
-            frame_stats,
-            text=stats_texto,
-            font=("Arial", 12, "bold"),
-            bg='#34495e',
-            fg='white',
-            justify='left'
-        )
-        lbl_stats.pack()
-
-        # Mensagem de incentivo
-        if aproveitamento >= 80:
-            mensagem = "🌟 Excelente! Você foi muito bem!"
-        elif aproveitamento >= 60:
-            mensagem = "👍 Bom desempenho! Continue estudando!"
-        elif aproveitamento >= 40:
-            mensagem = "📚 Precisa estudar mais. Não desista!"
-        else:
-            mensagem = "💪 Persistência é a chave! Continue tentando!"
-
-        lbl_mensagem = tk.Label(
-            frame_resumo,
-            text=mensagem,
-            font=("Arial", 14, "bold"),
-            bg='#2c3e50',
-            fg='#f39c12',
-            pady=20
-        )
-        lbl_mensagem.pack()
-
-        # Botões
-        frame_botoes = tk.Frame(frame_resumo, bg='#2c3e50')
-        frame_botoes.pack(pady=20)
-
-        btn_reiniciar = tk.Button(
-            frame_botoes,
-            text="🔄 Refazer Prova",
-            command=lambda: self.reiniciar_prova(janela_resumo),
-            bg='#3498db',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_reiniciar.pack(side='left', padx=10)
-
-        btn_estudo = tk.Button(
-            frame_botoes,
-            text="📖 Modo Estudo",
-            command=lambda: self.mudar_para_modo_estudo(janela_resumo),
-            bg='#27ae60',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_estudo.pack(side='left', padx=10)
-
-        btn_menu = tk.Button(
-            frame_botoes,
-            text="🏠 Menu Principal",
-            command=lambda: self.voltar_menu_com_confirmacao(janela_resumo),
-            bg='#e74c3c',
-            fg='white',
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=10,
-            cursor='hand2'
-        )
-        btn_menu.pack(side='left', padx=10)
-
-    def calcular_tempo_utilizado(self):
-        """Calcula o tempo utilizado na prova"""
-        tempo_usado = self.tempo_prova - self.tempo_restante if self.tempo_restante else self.tempo_prova
-        minutos = tempo_usado // 60
-        segundos = tempo_usado % 60
-        return f"{minutos:02d}:{segundos:02d}"
-
-    def reiniciar_prova(self, janela_resumo):
-        """Reinicia a prova do zero"""
-        janela_resumo.destroy()
-
-        # Resetar estatísticas
-        self.total_acertos = 0
-        self.total_erros = 0
-        self.questoes_respondidas = set()
-        self.questao_atual = 0
-        self.alternativa_selecionada = None
-        self.resposta_verificada = False
-
-        # Reiniciar temporizador
-        self.timer_ativo = False
-        self.tempo_restante = None
-
-        # Atualizar estatísticas
-        self.atualizar_estatisticas()
-
-        # Mostrar primeira questão
-        self.mostrar_questao()
-
-    def mudar_para_modo_estudo(self, janela_resumo):
-        """Muda para modo estudo após a prova"""
-        janela_resumo.destroy()
-
-        self.modo_atual = 'estudo'
-        self.timer_ativo = False
-        self.tempo_restante = None
-        self.lbl_temporizador.config(text="⏱️ Tempo: 00:00", fg='#f39c12')
-
-        messagebox.showinfo("Modo Estudo", "Agora você está no modo estudo!\n\nContinue revisando as questões.")
-
-    def voltar_menu_com_confirmacao(self, janela_resumo):
-        """Volta para o menu principal com confirmação"""
-        janela_resumo.destroy()
-
-        resposta = messagebox.askyesno(
-            "Voltar ao Menu",
-            "Deseja voltar ao menu principal?\n\nO progresso será perdido."
-        )
-        if resposta:
-            # Resetar variáveis
-            self.questao_atual = 0
-            self.alternativa_selecionada = None
-            self.resposta_verificada = False
-            self.df = None
-            self.questoes_agrupadas = []
-
-            # Recriar TODOS os widgets do menu principal
-            self.criar_widgets()
-
-    def voltar_menu(self):
-        """Volta para o menu principal LIMPANDO tudo corretamente"""
-        resposta = messagebox.askyesno(
-            "Voltar ao Menu",
-            "Deseja voltar ao menu principal?\n\nO progresso será perdido."
-        )
-        if resposta:
-            # Resetar variáveis
-            self.questao_atual = 0
-            self.alternativa_selecionada = None
-            self.resposta_verificada = False
-            self.df = None
-            self.questoes_agrupadas = []
-
-            # Recriar TODOS os widgets do menu principal
-            self.criar_widgets()
-
-    def salvar_progresso(self):
-        """Salva o progresso atual em um arquivo JSON"""
-        if not self.questoes_agrupadas:
-            return
-
-        progresso = {
-            'data_salvamento': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'total_acertos': self.total_acertos,
-            'total_erros': self.total_erros,
-            'questoes_respondidas': list(self.questoes_respondidas),
-            'questao_atual': self.questao_atual,
-            'modo_atual': self.modo_atual,
-            'tempo_restante': self.tempo_restante if self.tempo_restante else None,
-            'diretorio_teorias': self.diretorio_teorias,
-            'diretorio_imagens': self.diretorio_imagens
-        }
-
-        try:
-            with open(self.arquivo_progresso, 'w', encoding='utf-8') as f:
-                json.dump(progresso, f, indent=4, ensure_ascii=False)
-
-            # Verificar se o widget ainda existe antes de atualizar
-            if hasattr(self, 'lbl_status') and self.lbl_status.winfo_exists():
-                self.lbl_status.config(text=f"💾 Progresso salvo em {datetime.now().strftime('%H:%M:%S')}")
-
-        except Exception as e:
-            # Verificar se o widget ainda existe antes de mostrar erro
-            if hasattr(self, 'lbl_status') and self.lbl_status.winfo_exists():
-                self.lbl_status.config(text=f"Erro ao salvar: {e}")
-            else:
-                print(f"Erro ao salvar progresso: {e}")
-
-    def carregar_progresso(self):
-        """Carrega o progresso salvo anteriormente"""
-        if not os.path.exists(self.arquivo_progresso):
-            return
-
-        try:
-            with open(self.arquivo_progresso, 'r', encoding='utf-8') as f:
-                progresso = json.load(f)
-
-            self.total_acertos = progresso.get('total_acertos', 0)
-            self.total_erros = progresso.get('total_erros', 0)
-            self.questoes_respondidas = set(progresso.get('questoes_respondidas', []))
-            self.questao_atual = progresso.get('questao_atual', 0)
-            self.modo_atual = progresso.get('modo_atual', 'estudo')
-            self.tempo_restante = progresso.get('tempo_restante', None)
-            self.diretorio_teorias = progresso.get('diretorio_teorias', "teorias")
-            self.diretorio_imagens = progresso.get('diretorio_imagens', "imagens")
-
-            self.atualizar_estatisticas()
-
-            # Informar que progresso foi carregado
-            data = progresso.get('data_salvamento', 'desconhecida')
-            print(f"Progresso carregado de: {data}")
-
-        except Exception as e:
-            print(f"Erro ao carregar progresso: {e}")
-
-
-def main():
-    """Função principal"""
-    root = tk.Tk()
-
-    # Verificar dependências
+    DOCX_IMPORT_ERROR = str(e)
+
+try:
+    from PIL import Image
+    PIL_DISPONIVEL = True
+except ImportError:
+    PIL_DISPONIVEL = False
+
+
+# ============================
+# CONFIG
+# ============================
+ARQUIVO_PROGRESSO = "progresso_questoes.json"
+DIRETORIO_RELATORIOS = "relatorios"
+TEMPO_PADRAO_MIN = 60
+ARQUIVO_PLANILHA_PADRAO = "ADS_POO.xlsx"
+
+
+# ============================
+# ESTADO INICIAL
+# ============================
+def init_session():
+    defaults = {
+        "df": None,
+        "questoes_agrupadas": [],
+        "questao_atual": 0,
+        "alternativa_selecionada": None,
+        "resposta_verificada": False,
+
+        # estatísticas
+        "total_acertos": 0,
+        "total_erros": 0,
+        "questoes_respondidas": set(),
+        "respostas_por_questao": {},  # idx -> letra (congelada no verificar)
+
+        # usuário
+        "nome_usuario": "",
+        "registro_academico": "",
+        "turma": "",
+
+        # modo
+        "modo_atual": "estudo",
+        "tempo_prova": 60 * 60,
+        "tempo_restante": None,
+        "timer_ativo": False,
+        "prova_inicio_epoch": None,
+        "prova_fim_epoch": None,
+        "questoes_iniciadas": False,
+
+        # diretórios
+        "diretorio_teorias": "teorias",
+        "diretorio_imagens": "imagens",
+
+        # flags
+        "cadastro_confirmado": False,
+        "planilha_carregada": False,
+        "mostrar_justificativas": False,
+        "status_msg": "",
+
+        # usado para recriar widgets radio quando precisar (ex.: recarregar planilha)
+        "radio_reset_version": 0,
+
+        # controle de abertura da teoria
+        "abrir_teoria_para_idx": None,
+    }
+
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+# ============================
+# UTILITÁRIOS
+# ============================
+def to_int_safe(v, default=0):
     try:
-        import pandas
-    except ImportError:
-        messagebox.showerror(
-            "Erro",
-            "Biblioteca pandas não encontrada!\n\n"
-            "Instale com: pip install pandas"
+        return int(float(v))
+    except Exception:
+        return default
+
+
+def eh_algarismo_romano(texto):
+    texto = str(texto).strip().upper()
+    padrao_romano = r'^[IVXLCDM]+$'
+    return bool(re.match(padrao_romano, texto)) and len(texto) <= 5
+
+
+def salvar_json(caminho, dados):
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(dados, f, indent=4, ensure_ascii=False)
+def enviar_relatorio_por_email(txt_content: str, json_content: str, nome_txt: str, nome_json: str):
+    """
+    Envia relatório por e-mail usando SMTP e credenciais em st.secrets.
+    Espera existir st.secrets["email"] com as chaves configuradas.
+    """
+    try:
+        email_cfg = st.secrets["email"]
+
+        smtp_server = email_cfg["smtp_server"]
+        smtp_port = int(email_cfg["smtp_port"])
+        username = email_cfg["username"]
+        password = email_cfg["password"]
+        from_email = email_cfg.get("from_email", username)
+        to_email = email_cfg.get("to_email", "pedro.euphrasio@docente.unip.br")
+        use_tls = bool(email_cfg.get("use_tls", True))
+
+        # Monta mensagem
+        msg = EmailMessage()
+        msg["Subject"] = (
+            f"Relatório de Avaliação - {st.session_state.nome_usuario} "
+            f"(RA {st.session_state.registro_academico}) - "
+            f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
         )
+        msg["From"] = from_email
+        msg["To"] = to_email
+
+        corpo = f"""
+Olá,
+
+Segue em anexo o relatório de avaliação gerado pelo aplicativo.
+
+Aluno: {st.session_state.nome_usuario}
+RA: {st.session_state.registro_academico}
+Turma: {st.session_state.turma}
+Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+
+Atenciosamente,
+Aplicativo de Questões (Streamlit)
+""".strip()
+
+        msg.set_content(corpo)
+
+        # Anexos
+        msg.add_attachment(
+            txt_content.encode("utf-8"),
+            maintype="text",
+            subtype="plain",
+            filename=nome_txt
+        )
+
+        msg.add_attachment(
+            json_content.encode("utf-8"),
+            maintype="application",
+            subtype="json",
+            filename=nome_json
+        )
+
+        # Envio SMTP
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+            if use_tls:
+                server.starttls()
+            server.login(username, password)
+            server.send_message(msg)
+
+        return True, f"✅ Relatório enviado por e-mail para {to_email}"
+
+    except KeyError as e:
+        return False, f"❌ Configuração ausente em st.secrets[email]: {e}"
+    except Exception as e:
+        return False, f"❌ Erro ao enviar e-mail: {e}"
+
+def carregar_json(caminho):
+    if not os.path.exists(caminho):
+        return None
+    with open(caminho, "r", encoding="utf-8") as f:
+        return json.load(f)
+def formatar_tempo(segundos):
+    try:
+        segundos = 0 if segundos is None else int(float(segundos))
+        segundos = max(0, segundos)
+        return f"{segundos // 60:02d}:{segundos % 60:02d}"
+    except Exception:
+        return "00:00"
+def atualizar_tempo_prova():
+    if st.session_state.modo_atual != "prova":
         return
 
-    app = QuestoesApp(root)
-    root.mainloop()
+    if not st.session_state.timer_ativo:
+        return
+
+    fim = st.session_state.get("prova_fim_epoch", None)
+    if fim is None:
+        return
+
+    restante = int(fim - time.time())
+
+    if restante <= 0:
+        st.session_state.tempo_restante = 0
+        st.session_state.timer_ativo = False
+    else:
+        st.session_state.tempo_restante = restante
+
+
+def calcular_tempo_utilizado():
+    if st.session_state.modo_atual == "prova":
+        if st.session_state.tempo_restante is None:
+            return formatar_tempo(st.session_state.tempo_prova)
+        tempo_usado = st.session_state.tempo_prova - st.session_state.tempo_restante
+        return formatar_tempo(tempo_usado)
+    return "00:00"
+
+
+# ============================
+# PROGRESSO
+# ============================
+def salvar_progresso():
+    progresso = {
+        "data_salvamento": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_acertos": st.session_state.total_acertos,
+        "total_erros": st.session_state.total_erros,
+        "questoes_respondidas": list(st.session_state.questoes_respondidas),
+        "questao_atual": st.session_state.questao_atual,
+        "modo_atual": st.session_state.modo_atual,
+        "tempo_prova": st.session_state.tempo_prova,
+        "tempo_restante": st.session_state.tempo_restante,
+        "diretorio_teorias": st.session_state.diretorio_teorias,
+        "diretorio_imagens": st.session_state.diretorio_imagens,
+        "dados_usuario": {
+            "nome": st.session_state.nome_usuario,
+            "registro_academico": st.session_state.registro_academico,
+            "turma": st.session_state.turma
+        },
+        "respostas_por_questao": st.session_state.respostas_por_questao,
+        "cadastro_confirmado": st.session_state.cadastro_confirmado,
+        "radio_reset_version": st.session_state.radio_reset_version,
+    }
+    try:
+        salvar_json(ARQUIVO_PROGRESSO, progresso)
+        st.session_state.status_msg = f"💾 Progresso salvo ({datetime.now().strftime('%H:%M:%S')})"
+    except Exception as e:
+        st.session_state.status_msg = f"❌ Erro ao salvar progresso: {e}"
+
+
+def carregar_progresso():
+    progresso = carregar_json(ARQUIVO_PROGRESSO)
+    if not progresso:
+        return
+
+    try:
+        st.session_state.total_acertos = progresso.get("total_acertos", 0)
+        st.session_state.total_erros = progresso.get("total_erros", 0)
+        st.session_state.questoes_respondidas = set(progresso.get("questoes_respondidas", []))
+        st.session_state.questao_atual = progresso.get("questao_atual", 0)
+        st.session_state.modo_atual = progresso.get("modo_atual", "estudo")
+        st.session_state.tempo_prova = progresso.get("tempo_prova", TEMPO_PADRAO_MIN * 60)
+        st.session_state.tempo_restante = progresso.get("tempo_restante", None)
+        st.session_state.diretorio_teorias = progresso.get("diretorio_teorias", "teorias")
+        st.session_state.diretorio_imagens = progresso.get("diretorio_imagens", "imagens")
+        st.session_state.respostas_por_questao = progresso.get("respostas_por_questao", {})
+        st.session_state.cadastro_confirmado = progresso.get("cadastro_confirmado", False)
+        st.session_state.radio_reset_version = progresso.get("radio_reset_version", 0)
+
+        dados_usuario = progresso.get("dados_usuario", {})
+        st.session_state.nome_usuario = dados_usuario.get("nome", "")
+        st.session_state.registro_academico = dados_usuario.get("registro_academico", "")
+        st.session_state.turma = dados_usuario.get("turma", "")
+
+        st.session_state.status_msg = f"✅ Progresso carregado ({progresso.get('data_salvamento', 'data desconhecida')})"
+    except Exception as e:
+        st.session_state.status_msg = f"⚠️ Erro ao carregar progresso: {e}"
+
+
+# ============================
+# PLANILHA / QUESTÕES
+# ============================
+def agrupar_questoes_corretamente(df):
+    questoes = []
+    questao_atual = None
+
+    for _, row in df.iterrows():
+        q_col = "Questão "
+        if q_col not in df.columns:
+            raise KeyError("Coluna 'Questão ' não encontrada na planilha.")
+
+        if pd.notna(row.get("Questão ")):
+            if questao_atual is not None:
+                questoes.append(questao_atual)
+
+            questao_atual = {
+                "tomo": row.get("TOMO", "N/A") if pd.notna(row.get("TOMO", "N/A")) else "N/A",
+                "numero": row.get("Questão "),
+                "enunciado": row.get("Enunciado", "") if pd.notna(row.get("Enunciado", "")) else "",
+                "imagem": row.get("Imagem", "") if pd.notna(row.get("Imagem", "")) else "",
+                "alternativas": [],
+                "usa_algarismos_romanos": False,
+            }
+
+        if pd.notna(row.get("Alternativas")) and questao_atual is not None:
+            alt_letra = str(row.get("Alternativas")).strip()
+            alternativa = {
+                "letra": alt_letra,
+                "texto": str(row.get("Textos das Alternativas", "")).strip() if pd.notna(row.get("Textos das Alternativas")) else "",
+                "analise": str(row.get("Análise das alternativas ", "")).strip() if pd.notna(row.get("Análise das alternativas ")) else "",
+                "correta": str(row.get("Alternativa correta", "")).strip() == "X" if pd.notna(row.get("Alternativa correta")) else False
+            }
+            questao_atual["alternativas"].append(alternativa)
+
+            if eh_algarismo_romano(alt_letra):
+                questao_atual["usa_algarismos_romanos"] = True
+
+    if questao_atual is not None:
+        questoes.append(questao_atual)
+
+    return questoes
+
+
+def carregar_planilha_arquivo(uploaded_file=None, caminho_local=None):
+    if uploaded_file is None and not caminho_local:
+        st.error("Informe um arquivo (upload) ou caminho local.")
+        return False
+
+    try:
+        if uploaded_file is not None:
+            nome = uploaded_file.name.lower()
+            bytes_data = uploaded_file.read()
+            bio = io.BytesIO(bytes_data)
+            if nome.endswith(".xlsx") or nome.endswith(".xlsm"):
+                df = pd.read_excel(bio, engine="openpyxl")
+            elif nome.endswith(".xls"):
+                df = pd.read_excel(bio, engine="xlrd")
+            else:
+                df = pd.read_excel(bio)
+        else:
+            if not os.path.exists(caminho_local):
+                st.error(f"Arquivo não encontrado: {caminho_local}")
+                return False
+
+            ext = os.path.splitext(caminho_local)[1].lower()
+            if ext in [".xlsx", ".xlsm"]:
+                df = pd.read_excel(caminho_local, engine="openpyxl")
+            elif ext == ".xls":
+                df = pd.read_excel(caminho_local, engine="xlrd")
+            else:
+                df = pd.read_excel(caminho_local)
+
+        questoes = agrupar_questoes_corretamente(df)
+        if not questoes:
+            st.warning("Nenhuma questão encontrada na planilha.")
+            return False
+
+        st.session_state.df = df
+        st.session_state.questoes_agrupadas = questoes
+        st.session_state.planilha_carregada = True
+
+        # reset estatísticas ao carregar nova planilha
+        st.session_state.total_acertos = 0
+        st.session_state.total_erros = 0
+        st.session_state.questoes_respondidas = set()
+        st.session_state.respostas_por_questao = {}
+        st.session_state.questao_atual = 0
+        st.session_state.resposta_verificada = False
+        st.session_state.alternativa_selecionada = None
+        st.session_state.mostrar_justificativas = False
+
+        # força recriação dos radios
+        st.session_state.radio_reset_version += 1
+
+        st.success(f"✅ {len(questoes)} questões carregadas com sucesso!")
+        salvar_progresso()
+        return True
+
+    except ImportError as e:
+        if "xlrd" in str(e):
+            st.error("Biblioteca 'xlrd' não encontrada. Instale com: pip install xlrd")
+        elif "openpyxl" in str(e):
+            st.error("Biblioteca 'openpyxl' não encontrada. Instale com: pip install openpyxl")
+        else:
+            st.error(f"Erro de importação: {e}")
+        return False
+    except Exception as e:
+        st.error(f"Erro ao carregar planilha: {e}")
+        return False
+
+
+# ============================
+# IMAGENS DAS QUESTÕES
+# ============================
+def encontrar_imagem_questao(nome_imagem, diretorio_imagens):
+    if not nome_imagem:
+        return None
+
+    if not os.path.exists(diretorio_imagens):
+        return None
+
+    extensoes = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"]
+    for ext in extensoes:
+        p = os.path.join(diretorio_imagens, str(nome_imagem) + ext)
+        if os.path.exists(p):
+            return p
+
+    p_exato = os.path.join(diretorio_imagens, str(nome_imagem))
+    if os.path.exists(p_exato):
+        return p_exato
+
+    return None
+
+
+def mostrar_imagem_questao_streamlit(nome_imagem):
+    caminho = encontrar_imagem_questao(nome_imagem, st.session_state.diretorio_imagens)
+    if not caminho:
+        st.info(f"🖼️ Imagem não encontrada para: {nome_imagem}")
+        return
+
+    try:
+        if PIL_DISPONIVEL:
+            img = Image.open(caminho)
+            st.image(img, caption=f"Figura: {nome_imagem}", width="stretch")
+        else:
+            st.image(caminho, caption=f"Figura: {nome_imagem}", width="stretch")
+    except Exception as e:
+        st.warning(f"Erro ao exibir imagem {nome_imagem}: {e}")
+
+
+# ============================
+# TEORIAS (.docx)
+# ============================
+def localizar_arquivo_teoria(questao):
+    if not os.path.exists(st.session_state.diretorio_teorias):
+        return None, []
+
+    tomo = to_int_safe(questao["tomo"], 0)
+    numero = to_int_safe(questao["numero"], 0)
+
+    possiveis_nomes = [
+        f"T{tomo}Q{numero}.docx",
+        f"T{tomo}Q{numero:02d}.docx",
+        f"Tomo{tomo}Questao{numero}.docx",
+        f"Tomo {tomo} Questão {numero}.docx",
+        f"Tomo{tomo}Q{numero}.docx",
+    ]
+
+    for nome in possiveis_nomes:
+        caminho = os.path.join(st.session_state.diretorio_teorias, nome)
+        if os.path.exists(caminho):
+            return caminho, possiveis_nomes
+
+    return None, possiveis_nomes
+
+
+def extrair_imagens_docx(caminho_docx):
+    imagens = []
+    try:
+        with zipfile.ZipFile(caminho_docx) as z:
+            media_files = [f for f in z.namelist() if f.startswith("word/media/")]
+            for mf in media_files:
+                try:
+                    data = z.read(mf)
+                    imagens.append((os.path.basename(mf), data))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return imagens
+
+
+def renderizar_teoria(questao):
+    st.subheader("📖 Teoria da questão")
+
+    if not DOCX_DISPONIVEL:
+        st.error("Biblioteca python-docx não encontrada. Instale com: pip install python-docx")
+        return
+
+    caminho, possiveis = localizar_arquivo_teoria(questao)
+    if not caminho:
+        st.warning("Arquivo de teoria não encontrado.")
+        with st.expander("Ver nomes esperados"):
+            st.write("Formatos procurados:")
+            for n in possiveis:
+                st.write(f"- {n}")
+            st.write(f"Diretório atual: `{st.session_state.diretorio_teorias}`")
+        return
+
+    st.caption(f"Arquivo: {os.path.basename(caminho)}")
+
+    try:
+        doc = Document(caminho)
+
+        for p in doc.paragraphs:
+            txt = p.text.strip()
+            if not txt:
+                continue
+
+            style_name = getattr(p.style, "name", "") if p.style else ""
+            if str(style_name).startswith("Heading"):
+                st.markdown(f"### {txt}")
+            else:
+                st.write(txt)
+
+        imagens = extrair_imagens_docx(caminho)
+        if imagens:
+            st.markdown("#### 🖼 Imagens da teoria")
+            for nome_img, data in imagens:
+                try:
+                    if PIL_DISPONIVEL:
+                        img = Image.open(BytesIO(data))
+                        st.image(img, caption=nome_img, width="stretch")
+                    else:
+                        st.image(data, caption=nome_img, width="stretch")
+                except Exception:
+                    continue
+
+    except Exception as e:
+        st.error(f"Erro ao ler teoria: {e}")
+
+
+# ============================
+# RESPOSTAS / JUSTIFICATIVAS
+# ============================
+def get_alt_correta(questao):
+    for alt in questao["alternativas"]:
+        if alt["correta"]:
+            return alt["letra"]
+    return None
+
+
+def limpar_analise(analise):
+    if not analise:
+        return "Justificativa não disponível."
+    a = analise.strip()
+    if a.startswith("Alternativa correta."):
+        a = a.replace("Alternativa correta.", "", 1).strip()
+    elif a.startswith("Alternativa incorreta."):
+        a = a.replace("Alternativa incorreta.", "", 1).strip()
+    return a or "Justificativa não disponível."
+
+
+def verificar_resposta_streamlit():
+    idx = st.session_state.questao_atual
+
+    if idx in st.session_state.questoes_respondidas:
+        st.warning("🔒 Esta questão já foi verificada. A resposta está bloqueada.")
+        return
+
+    questao = st.session_state.questoes_agrupadas[idx]
+    key_radio = f"resp_q_{idx}_v{st.session_state.radio_reset_version}"
+    alt_sel = st.session_state.get(key_radio, "")
+
+    if not alt_sel:
+        st.warning("Por favor, selecione uma alternativa!")
+        return
+
+    alt_correta = get_alt_correta(questao)
+    acertou = (alt_sel == alt_correta)
+
+    if acertou:
+        st.session_state.total_acertos += 1
+    else:
+        st.session_state.total_erros += 1
+
+    st.session_state.questoes_respondidas.add(idx)
+    st.session_state.respostas_por_questao[str(idx)] = alt_sel  # congela resposta
+
+    st.session_state.alternativa_selecionada = alt_sel
+    st.session_state.resposta_verificada = True
+    st.session_state.mostrar_justificativas = False
+
+    salvar_progresso()
+
+
+def renderizar_feedback(questao, alt_sel, idx=None):
+    """
+    Feedback estilo prova:
+    - Após verificar, mostra que foi registrada e bloqueada
+    - Não revela a alternativa correta aqui
+    """
+    if idx is None:
+        idx = st.session_state.questao_atual
+
+    alt_correta = get_alt_correta(questao)
+
+    # se já verificada, usa congelada
+    if idx in st.session_state.questoes_respondidas:
+        resposta_congelada = st.session_state.respostas_por_questao.get(str(idx), alt_sel)
+        if not resposta_congelada:
+            st.info("🔒 Questão já verificada. A resposta está bloqueada.")
+            return
+
+        if resposta_congelada == alt_correta:
+            st.success(f"✅ Questão verificada. Resposta registrada: {resposta_congelada}.")
+        else:
+            st.warning(
+                f"🔒 Questão verificada. Resposta registrada: {resposta_congelada}. "
+                f"Não é possível alterar após clicar em 'Verificar'."
+            )
+        return
+
+    # ainda não verificada
+    acertou = (alt_sel == alt_correta)
+    if acertou:
+        st.success(f"🎉 Resposta correta! Você marcou **{alt_sel}**.")
+    else:
+        st.error(f"❌ Resposta incorreta. Você marcou **{alt_sel}**.")
+        st.info("Clique em **Mostrar Resposta / Justificativas** para ver a alternativa correta e as explicações.")
+
+
+def renderizar_justificativas(questao):
+    alt_correta = get_alt_correta(questao)
+    idx = st.session_state.questao_atual
+
+    # se já verificada, a "sua resposta" deve ser a congelada
+    alt_sel = st.session_state.respostas_por_questao.get(str(idx), st.session_state.alternativa_selecionada)
+
+    st.markdown("## 📝 Resposta e Justificativas")
+    if alt_correta:
+        st.success(f"✅ Alternativa correta: **{alt_correta}**")
+    if alt_sel:
+        if alt_sel == alt_correta:
+            st.info(f"✅ Sua resposta: **{alt_sel}**")
+        else:
+            st.info(f"❌ Sua resposta: **{alt_sel}**")
+
+    if questao["usa_algarismos_romanos"]:
+        st.markdown("### 📚 Justificativas de todas as alternativas (algarismos romanos)")
+        for alt in questao["alternativas"]:
+            cor = "🟢" if alt["correta"] else "🔴"
+            with st.expander(f"{cor} Alternativa {alt['letra']}"):
+                if alt["texto"]:
+                    st.caption(f"Texto: {alt['texto']}")
+                st.write(limpar_analise(alt["analise"]))
+    else:
+        st.markdown("### 📚 Clique na alternativa para ver a justificativa")
+        tabs = st.tabs([f"Alt {a['letra']}" for a in questao["alternativas"]])
+        for tab, alt in zip(tabs, questao["alternativas"]):
+            with tab:
+                if alt["correta"]:
+                    st.success(f"✅ Alternativa {alt['letra']}")
+                else:
+                    st.error(f"❌ Alternativa {alt['letra']}")
+                if alt["texto"]:
+                    st.caption(f"Texto: {alt['texto']}")
+                st.write(limpar_analise(alt["analise"]))
+
+
+def gerar_relatorio():
+    if not st.session_state.questoes_agrupadas:
+        st.warning("Nenhuma questão foi carregada ainda!")
+        return False, None
+
+    total_questoes = len(st.session_state.questoes_agrupadas)
+    total_respondidas = len(st.session_state.questoes_respondidas)
+    aproveitamento = (st.session_state.total_acertos / total_respondidas * 100) if total_respondidas > 0 else 0
+
+    relatorio = {
+        "dados_usuario": {
+            "nome": st.session_state.nome_usuario,
+            "registro_academico": st.session_state.registro_academico,
+            "turma": st.session_state.turma,
+            "data_cadastro": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        },
+        "estatisticas": {
+            "total_questoes": total_questoes,
+            "questoes_respondidas": total_respondidas,
+            "acertos": st.session_state.total_acertos,
+            "erros": st.session_state.total_erros,
+            "aproveitamento": f"{aproveitamento:.1f}%",
+            "data_geracao": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        },
+        "detalhes_questoes": []
+    }
+
+    for idx in sorted(list(st.session_state.questoes_respondidas)):
+        if idx < len(st.session_state.questoes_agrupadas):
+            q = st.session_state.questoes_agrupadas[idx]
+            relatorio["detalhes_questoes"].append({
+                "tomo": q["tomo"],
+                "numero": to_int_safe(q["numero"], 0),
+                "alternativa_correta": get_alt_correta(q),
+                "alternativa_marcada": st.session_state.respostas_por_questao.get(str(idx), None)
+            })
+
+    try:
+        # -----------------------------
+        # Conteúdo em memória (JSON/TXT)
+        # -----------------------------
+        json_content = json.dumps(relatorio, indent=4, ensure_ascii=False)
+
+        linhas_txt = []
+        linhas_txt.append("=" * 60)
+        linhas_txt.append("RELATÓRIO DE DESEMPENHO - APLICATIVO DE QUESTÕES")
+        linhas_txt.append("=" * 60)
+        linhas_txt.append("")
+        linhas_txt.append("DADOS DO ESTUDANTE:")
+        linhas_txt.append("-" * 60)
+        linhas_txt.append(f"Nome: {st.session_state.nome_usuario}")
+        linhas_txt.append(f"Registro Acadêmico: {st.session_state.registro_academico}")
+        linhas_txt.append(f"Turma: {st.session_state.turma}")
+        linhas_txt.append(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        linhas_txt.append("")
+        linhas_txt.append("ESTATÍSTICAS:")
+        linhas_txt.append("-" * 60)
+        linhas_txt.append(f"Total de Questões: {total_questoes}")
+        linhas_txt.append(f"Questões Respondidas: {total_respondidas}")
+        linhas_txt.append(f"Acertos: {st.session_state.total_acertos}")
+        linhas_txt.append(f"Erros: {st.session_state.total_erros}")
+        linhas_txt.append(f"Aproveitamento: {aproveitamento:.1f}%")
+        linhas_txt.append(f"Tempo utilizado: {calcular_tempo_utilizado()}")
+        linhas_txt.append("")
+        linhas_txt.append("DETALHES DAS QUESTÕES:")
+        linhas_txt.append("-" * 60)
+
+        for d in relatorio["detalhes_questoes"]:
+            linhas_txt.append(
+                f"TOMO {d['tomo']} - Questão {d['numero']} | "
+                f"Marcada: {d['alternativa_marcada']} | Correta: {d['alternativa_correta']}"
+            )
+
+        txt_content = "\n".join(linhas_txt)
+
+        # -----------------------------
+        # Nomes de arquivos
+        # -----------------------------
+        nome_json = "relatorio_estudante.json"
+        nome_txt = f"relatorio_{st.session_state.registro_academico}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        # -----------------------------
+        # Tentativa de salvar em disco
+        # (útil localmente; no Cloud é efêmero)
+        # -----------------------------
+        caminho_json = os.path.join(DIRETORIO_RELATORIOS, nome_json)
+        caminho_txt = os.path.join(DIRETORIO_RELATORIOS, nome_txt)
+
+        try:
+            os.makedirs(DIRETORIO_RELATORIOS, exist_ok=True)
+
+            with open(caminho_json, "w", encoding="utf-8") as f_json:
+                f_json.write(json_content)
+
+            with open(caminho_txt, "w", encoding="utf-8") as f_txt:
+                f_txt.write(txt_content)
+        except Exception as e_local:
+            # Não falha o relatório por causa do disco no Streamlit Cloud
+            caminho_json = None
+            caminho_txt = None
+            st.warning(f"Relatório gerado em memória, mas não foi possível salvar em disco: {e_local}")
+
+        return True, {
+            "json": caminho_json,
+            "txt": caminho_txt,
+            "nome_json": nome_json,
+            "nome_txt": nome_txt,
+            "json_content": json_content,
+            "txt_content": txt_content,
+            "aproveitamento": aproveitamento,
+            "total_questoes": total_questoes,
+            "total_respondidas": total_respondidas
+        }
+
+    except Exception as e:
+        st.error(f"Erro ao gerar relatório: {e}")
+        return False, None
+
+
+# ============================
+# INTERFACE
+# ============================
+def header():
+    atualizar_tempo_prova()
+   # st.caption(
+    #    f"DEBUG modo_atual={st.session_state.get('modo_atual')} | timer_ativo={st.session_state.get('timer_ativo')} | tempo_restante={st.session_state.get('tempo_restante')}")
+
+    st.title("📚 Aplicativo para o Processo Ensino / Aprendizagem")
+
+    if st.session_state.cadastro_confirmado:
+        st.markdown(
+            f"**👤 {st.session_state.nome_usuario}** | "
+            f"**📋 RA:** {st.session_state.registro_academico} | "
+            f"**🏫 Turma:** {st.session_state.turma}"
+        )
+
+    col1, col2, col3 = st.columns([2, 2, 1])
+    total = st.session_state.total_acertos + st.session_state.total_erros
+    with col1:
+        st.info(f"📊 Acertos: {st.session_state.total_acertos} | Erros: {st.session_state.total_erros} | Total: {total}")
+
+    with col2:
+        if st.session_state.get("modo_atual") == "prova":
+            tempo_raw = st.session_state.get("tempo_restante", None)
+            if tempo_raw is None:
+                tempo_raw = st.session_state.get("tempo_prova", 0)
+
+            try:
+                tempo_seg = int(float(tempo_raw))
+            except Exception:
+                tempo_seg = 0
+
+            tempo_seg = max(0, tempo_seg)
+            mins, secs = divmod(tempo_seg, 60)
+
+            #st.caption(
+            #    f"DEBUG raw={tempo_raw} | tipo_raw={type(tempo_raw)} | "
+            #    f"tempo_seg={tempo_seg} | mins={mins} | secs={secs}"
+            #)
+
+            # ✅ força render texto puro (sem st.warning)
+            cor = "#ff4b4b" if tempo_seg <= 300 else "#f5c542"
+            st.markdown(
+                f"""
+                <div style="
+                    background: rgba(245,197,66,0.15);
+                    border-radius: 10px;
+                    padding: 14px 16px;
+                    font-weight: 600;
+                    font-size: 18px;
+                    color: {cor};
+                ">
+                    ⏱ Tempo: {mins:02d}:{secs:02d}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                """
+                <div style="
+                    background: rgba(245,197,66,0.15);
+                    border-radius: 10px;
+                    padding: 14px 16px;
+                    font-weight: 600;
+                    font-size: 18px;
+                    color: #f5c542;
+                ">
+                    ⏱ Tempo: 00:00
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    with col3:
+        if st.button("💾 Salvar progresso"):
+            salvar_progresso()
+
+    if st.session_state.status_msg:
+        st.caption(st.session_state.status_msg)
+
+
+def tela_cadastro():
+    st.subheader("🎓 Cadastro do Estudante")
+    st.write("Preencha seus dados para iniciar.")
+
+    with st.form("form_cadastro"):
+        nome = st.text_input("Nome Completo", value=st.session_state.nome_usuario)
+        ra = st.text_input("Registro Acadêmico (RA)", value=st.session_state.registro_academico)
+        turma = st.text_input("Turma", value=st.session_state.turma)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            iniciar = st.form_submit_button("🚀 Iniciar Aplicativo", width="stretch")
+        with col2:
+            carregar = st.form_submit_button("📂 Carregar dados salvos", width="stretch")
+
+    if carregar:
+        carregar_progresso()
+        st.rerun()
+
+    if iniciar:
+        if not nome.strip():
+            st.warning("Por favor, preencha o nome completo.")
+            return
+        if not ra.strip():
+            st.warning("Por favor, preencha o Registro Acadêmico.")
+            return
+        if not turma.strip():
+            st.warning("Por favor, preencha a turma.")
+            return
+
+        st.session_state.nome_usuario = nome.strip()
+        st.session_state.registro_academico = ra.strip()
+        st.session_state.turma = turma.strip()
+        st.session_state.cadastro_confirmado = True
+        salvar_progresso()
+        st.rerun()
+
+
+def painel_menu():
+    st.subheader("📁 Carregar planilha e configurar estudo")
+
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        modo = st.radio(
+            "Modo",
+            options=["estudo", "prova"],
+            index=0 if st.session_state.modo_atual == "estudo" else 1,
+            horizontal=True
+        )
+    with col_m2:
+        if modo == "prova":
+            minutos = st.number_input(
+                "Tempo da prova (minutos)",
+                min_value=1,
+                max_value=600,
+                value=max(1, st.session_state.tempo_prova // 60),
+                step=1
+            )
+            st.session_state.tempo_prova = int(minutos) * 60
+            if not st.session_state.timer_ativo:
+                st.session_state.tempo_restante = st.session_state.tempo_prova
+        else:
+            st.session_state.tempo_restante = None
+            st.session_state.timer_ativo = False
+            st.session_state.prova_inicio_epoch = None
+            st.session_state.prova_fim_epoch = None
+            st.session_state.questoes_iniciadas = False
+
+    st.session_state.modo_atual = modo
+
+    st.markdown("---")
+    col_dir1, col_dir2 = st.columns(2)
+    with col_dir1:
+        st.session_state.diretorio_teorias = st.text_input(
+            "📚 Diretório de Teorias (.docx)",
+            value=st.session_state.diretorio_teorias
+        )
+    with col_dir2:
+        st.session_state.diretorio_imagens = st.text_input(
+            "🖼️ Diretório de Imagens",
+            value=st.session_state.diretorio_imagens
+        )
+
+    st.markdown("---")
+    st.write("### Planilha de questões")
+
+    caminho_padrao = os.path.join(os.getcwd(), ARQUIVO_PLANILHA_PADRAO)
+    st.caption(f"Arquivo padrão: {caminho_padrao}")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("🚀 Carregar Planilha", width="stretch"):
+            ok = carregar_planilha_arquivo(caminho_local=ARQUIVO_PLANILHA_PADRAO)
+            if ok:
+                st.rerun()
+
+    with col2:
+        if st.button("📊 Gerar Relatório", width="stretch"):
+            ok, info = gerar_relatorio()
+            if ok:
+                st.success(
+                    f"Relatório gerado com sucesso!\n\n"
+                    f"- JSON: {info['json']}\n"
+                    f"- TXT: {info['txt']}"
+                )
+
+    with col3:
+        if st.button("🔄 Carregar Progresso", width="stretch"):
+            carregar_progresso()
+            st.rerun()
+
+    if st.session_state.planilha_carregada and st.session_state.questoes_agrupadas:
+        st.success(f"{len(st.session_state.questoes_agrupadas)} questões prontas para estudo.")
+        if st.button("▶️ Ir para questões", width="stretch"):
+            st.rerun()
+
+
+def iniciar_timer_se_necessario():
+    if st.session_state.modo_atual != "prova":
+        return
+
+    # Já ativo e com fim definido -> não reinicia
+    if st.session_state.timer_ativo and st.session_state.prova_fim_epoch is not None:
+        return
+
+    agora = time.time()
+
+    # Se já houver tempo_restante salvo, usa ele; senão usa tempo total da prova
+    if st.session_state.tempo_restante is not None:
+        restante = int(st.session_state.tempo_restante)
+    else:
+        restante = int(st.session_state.tempo_prova)
+
+    st.session_state.timer_ativo = True
+    st.session_state.prova_inicio_epoch = agora
+    st.session_state.prova_fim_epoch = agora + restante
+    st.session_state.tempo_restante = restante
+
+
+def tela_questoes():
+    if not st.session_state.questoes_agrupadas:
+        st.warning("Nenhuma questão carregada.")
+        return
+
+    # ✅ Inicia timer quando entra na tela (modo prova)
+    iniciar_timer_se_necessario()
+
+    # ✅ Atualiza tempo a cada rerun
+    atualizar_tempo_prova()
+
+    # ✅ Auto refresh contínuo
+    if st.session_state.modo_atual == "prova" and st.session_state.timer_ativo:
+        st_autorefresh(interval=20000, limit=None, key="timer_autorefresh")
+
+    if st.session_state.modo_atual == "prova" and st.session_state.tempo_restante == 0:
+        st.warning("⏰ Tempo esgotado! Você pode continuar respondendo sem limite, se desejar.")
+
+    total_q = len(st.session_state.questoes_agrupadas)
+    idx = min(max(0, st.session_state.questao_atual), total_q - 1)
+    st.session_state.questao_atual = idx
+    questao = st.session_state.questoes_agrupadas[idx]
+
+    st.markdown("---")
+    st.subheader(f"📖 TOMO {questao['tomo']} - Questão {to_int_safe(questao['numero'])}")
+    st.caption(f"Questão {idx + 1} de {total_q}")
+
+    #if questao["usa_algarismos_romanos"]:
+      #  st.info("ℹ️ Esta questão usa algarismos romanos (I, II, III...)")
+
+    with st.expander("📄 Ver Enunciado Completo", expanded=True):
+        st.write(questao["enunciado"] if questao["enunciado"] else "Enunciado não disponível.")
+        if questao.get("imagem"):
+            mostrar_imagem_questao_streamlit(questao["imagem"])
+
+    # ======= Alternativas (BLOQUEIO REAL: some o radio após verificar) =======
+    st.markdown("### Escolha uma alternativa")
+    opcoes = [alt["letra"] for alt in questao["alternativas"]]
+    mapa_texto = {alt["letra"]: f"{alt['letra']}) {alt['texto']}" for alt in questao["alternativas"]}
+
+    ja_verificada = idx in st.session_state.questoes_respondidas
+    resposta_congelada = st.session_state.respostas_por_questao.get(str(idx), "")
+
+    if ja_verificada:
+        st.info("🔒 Questão já verificada. A resposta está bloqueada.")
+        for alt in questao["alternativas"]:
+            letra = alt["letra"]
+            texto = f"{letra}) {alt['texto']}"
+            if letra == resposta_congelada:
+                st.warning(f" {texto}  *(resposta registrada)*")
+            else:
+                st.write(texto)
+        alt_sel = resposta_congelada
+    else:
+        valor_inicial = st.session_state.respostas_por_questao.get(str(idx), "")
+        key_radio = f"resp_q_{idx}_v{st.session_state.radio_reset_version}"
+
+        if key_radio not in st.session_state:
+            st.session_state[key_radio] = valor_inicial if valor_inicial in opcoes else ""
+
+        opcoes_com_vazio = [""] + opcoes
+
+        def radio_format(x):
+            return "Selecione..." if x == "" else mapa_texto.get(x, x)
+
+        st.radio(
+            "Alternativas",
+            options=opcoes_com_vazio,
+            key=key_radio,
+            format_func=radio_format,
+            label_visibility="collapsed"
+        )
+        alt_sel = st.session_state.get(key_radio, "")
+
+    # ======= Botões =======
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1])
+
+    with col1:
+        if st.button("⬅ Anterior", width="stretch", disabled=(idx == 0)):
+            st.session_state.questao_atual = max(0, idx - 1)
+            st.session_state.resposta_verificada = False
+            st.session_state.mostrar_justificativas = False
+            st.rerun()
+
+    with col2:
+        if st.button("✅ Verificar", width="stretch", disabled=ja_verificada):
+            verificar_resposta_streamlit()
+            st.rerun()
+
+    with col3:
+        pode_mostrar_resposta = st.session_state.resposta_verificada or ja_verificada
+        if st.button("🔍 Mostrar Resposta", width="stretch", disabled=not pode_mostrar_resposta):
+            st.session_state.mostrar_justificativas = True
+            st.rerun()
+
+    with col4:
+        if st.button("📖 Ver Teoria", width="stretch"):
+            st.session_state["abrir_teoria_para_idx"] = idx
+            st.rerun()
+
+    with col5:
+        if st.button("➡ Próxima", width="stretch", disabled=not ja_verificada):
+            if idx < total_q - 1:
+                st.session_state.questao_atual = idx + 1
+                st.session_state.resposta_verificada = False
+                st.session_state.mostrar_justificativas = False
+                st.rerun()
+            else:
+                st.info("Você chegou ao fim das questões.")
+
+    # ======= Feedback =======
+    if ja_verificada and resposta_congelada:
+        renderizar_feedback(questao, resposta_congelada, idx=idx)
+    else:
+        if st.session_state.resposta_verificada and alt_sel:
+            renderizar_feedback(questao, alt_sel, idx=idx)
+
+    # Justificativas
+    if st.session_state.mostrar_justificativas:
+        renderizar_justificativas(questao)
+
+    # Teoria
+    if st.session_state.get("abrir_teoria_para_idx", None) == idx:
+        with st.expander("📖 Teoria da questão (expandida)", expanded=True):
+            renderizar_teoria(questao)
+
+    st.markdown("---")
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+
+    with c1:
+        if st.button("🏠 Menu Principal", width="stretch"):
+            st.session_state.planilha_carregada = False
+            st.session_state.df = None
+            st.session_state.questoes_agrupadas = []
+            st.session_state.questao_atual = 0
+            st.session_state.resposta_verificada = False
+            st.session_state.alternativa_selecionada = None
+            st.session_state.mostrar_justificativas = False
+            st.session_state.abrir_teoria_para_idx = None
+            st.session_state.questoes_iniciadas = False
+            st.session_state.prova_inicio_epoch = None
+            st.session_state.prova_fim_epoch = None
+            st.session_state.timer_ativo = False
+            st.session_state.tempo_restante = None if st.session_state.modo_atual == "estudo" else st.session_state.tempo_restante
+            st.rerun()
+
+    with c2:
+        if st.button("📊 Gerar Relatório", width="stretch"):
+            ok, info = gerar_relatorio()
+            if ok:
+                st.success(
+                    f"✅ Relatório gerado!\n"
+                    f"Aproveitamento: {info['aproveitamento']:.1f}%\n"
+                    f"Arquivos: {info['json']} | {info['txt']}"
+                )
+
+    with c3:
+        todas_respondidas = len(st.session_state.questoes_respondidas) == len(st.session_state.questoes_agrupadas)
+        if st.button("🏁 Finalizar Avaliação", width="stretch", disabled=not todas_respondidas):
+            ok, info = gerar_relatorio()
+            if ok:
+                st.balloons()
+                st.success(
+                    f"🎉 Avaliação finalizada!\n\n"
+                    f"Total: {info['total_questoes']}\n"
+                    f"Respondidas: {info['total_respondidas']}\n"
+                    f"Acertos: {st.session_state.total_acertos}\n"
+                    f"Erros: {st.session_state.total_erros}\n"
+                    f"Aproveitamento: {info['aproveitamento']:.1f}%"
+                )
+    with c4:
+        if st.button("📧 Enviar Relatório", width="stretch"):
+            ok, info = gerar_relatorio()
+            if ok:
+                ok_email, msg_email = enviar_relatorio_por_email(
+                    txt_content=info["txt_content"],
+                    json_content=info["json_content"],
+                    nome_txt=info["nome_txt"],
+                    nome_json=info["nome_json"],
+                )
+                if ok_email:
+                    st.success(msg_email)
+                else:
+                    st.error(msg_email)
+
+                # ✅ COLOQUE O TRECHO DE DOWNLOAD AQUI
+                st.download_button(
+                    "⬇️ Baixar TXT",
+                    data=info["txt_content"].encode("utf-8"),
+                    file_name=info["nome_txt"],
+                    mime="text/plain",
+                    width="stretch"
+                )
+                st.download_button(
+                    "⬇️ Baixar JSON",
+                    data=info["json_content"].encode("utf-8"),
+                    file_name=info["nome_json"],
+                    mime="application/json",
+                    width="stretch"
+                )
+
+
+# ============================
+# MAIN
+# ============================
+def main():
+    init_session()
+
+    # ✅ Atualiza tempo antes do header para o topo mostrar valor correto
+    atualizar_tempo_prova()
+
+
+
+    header()
+
+    with st.sidebar:
+        st.header("⚙️ Configurações")
+        st.write("Use esta barra para ajustes rápidos.")
+        if st.button("📥 Carregar progresso salvo"):
+            carregar_progresso()
+            st.rerun()
+        if st.button("💾 Salvar progresso agora"):
+            salvar_progresso()
+            st.rerun()
+
+        st.markdown("---")
+        st.caption("Dependências opcionais:")
+        st.write(f"- python-docx: {'✅' if DOCX_DISPONIVEL else '❌'}")
+        st.write(f"- pillow: {'✅' if PIL_DISPONIVEL else '❌'}")
+
+        if not DOCX_DISPONIVEL and DOCX_IMPORT_ERROR:
+            st.caption(f"Erro python-docx: {DOCX_IMPORT_ERROR}")
+
+        if st.session_state.modo_atual == "prova" and st.session_state.timer_ativo:
+           # st_autorefresh(interval=1000, limit=None, key="timer_autorefresh")
+            st.caption("⏱️ Atualização do timer")
+            st.write("Atualização automática ativa (1s).")
+
+    if not st.session_state.cadastro_confirmado:
+        tela_cadastro()
+        return
+
+    if not st.session_state.planilha_carregada:
+        painel_menu()
+        return
+
+    tela_questoes()
 
 
 if __name__ == "__main__":
