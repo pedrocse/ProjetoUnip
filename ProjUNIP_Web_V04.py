@@ -869,7 +869,7 @@ def tela_cadastro():
 
         col1, col2 = st.columns(2)
         with col1:
-            iniciar = st.form_submit_button("🚀 Iniciar Aplicativo", width="stretch")
+            iniciar = st.form_submit_button("🚀 Iniciar Avaliação", width="stretch")
         with col2:
             carregar = st.form_submit_button("📂 Carregar dados salvos", width="stretch")
 
@@ -1224,4 +1224,5 @@ def main():
     
 if __name__ == "__main__":
     main()
+
 
