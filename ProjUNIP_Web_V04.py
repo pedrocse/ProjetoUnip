@@ -1210,32 +1210,7 @@ def main():
     # ✅ Atualiza tempo antes do header para o topo mostrar valor correto
     atualizar_tempo_prova()
 
-
-
     header()
-
-    with st.sidebar:
-        st.header("⚙️ Configurações")
-        st.write("Use esta barra para ajustes rápidos.")
-        if st.button("📥 Carregar progresso salvo"):
-            carregar_progresso()
-            st.rerun()
-        if st.button("💾 Salvar progresso agora"):
-            salvar_progresso()
-            st.rerun()
-
-        st.markdown("---")
-        st.caption("Dependências opcionais:")
-        st.write(f"- python-docx: {'✅' if DOCX_DISPONIVEL else '❌'}")
-        st.write(f"- pillow: {'✅' if PIL_DISPONIVEL else '❌'}")
-
-        if not DOCX_DISPONIVEL and DOCX_IMPORT_ERROR:
-            st.caption(f"Erro python-docx: {DOCX_IMPORT_ERROR}")
-
-        if st.session_state.modo_atual == "prova" and st.session_state.timer_ativo:
-           # st_autorefresh(interval=1000, limit=None, key="timer_autorefresh")
-            st.caption("⏱️ Atualização do timer")
-            st.write("Atualização automática ativa (1s).")
 
     if not st.session_state.cadastro_confirmado:
         tela_cadastro()
@@ -1246,7 +1221,7 @@ def main():
         return
 
     tela_questoes()
-
-
+    
 if __name__ == "__main__":
     main()
+
